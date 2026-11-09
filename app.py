@@ -101,11 +101,12 @@ if sailor_name:
     bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm gap)", options=bh_options, index=bh_options.index(specs["boom_height"]))
     
-    ss_options = ["3.0m", "3.5m", "4.5m", "5.5m", "6.2m"]
+    ss_options = ["3", "3.5", "4.5", "5.5", "6.2"]
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=ss_options, index=ss_options.index(specs["sail_size"]))
     
     specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", min_value=60, max_value=110, value=int(specs["race_weight"]))
-    # --- MAIN AREA LAYOUT (MAP AND TABLES) ---
+
+# --- MAIN AREA LAYOUT (MAP AND TABLES) ---
 col_map, col_data = st.columns([2.5, 1.5])
 
 with col_map:
@@ -113,15 +114,15 @@ with col_map:
     
     # Default map view center
     map_center = [51.5074, -0.1278]
-    # FIXED: Safely center the map on the very first GPS point of your loaded track
     if len(track_points) > 0:
         map_center = track_points[0]
         
+    # CHANGED HERE: Switched to Google Satellite Tiles for open web compatibility
     m = folium.Map(
         location=map_center, 
-        zoom_start=14, 
-        tiles="https://arcgisonline.com{z}/{y}/{x}", 
-        attr="Esri Satellite"
+        zoom_start=15, 
+        tiles="https://google.com{x}&y={y}&z={z}", 
+        attr="Google Satellite"
     )
     
     # Render the bright yellow yacht track layer onto the satellite beach
