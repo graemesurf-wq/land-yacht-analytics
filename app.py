@@ -35,7 +35,10 @@ st.sidebar.header("🕹️ Race Control Panel")
 total_races = st.sidebar.number_input("Total Races", min_value=1, max_value=20, value=3)
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race", options=race_options)
-allocated_duration = st.sidebar.selectbox("Duration", options=, index=2)
+
+# FIXED: Filled in your exact duration limits
+duration_choices = [10, 15, 20, 25, 30]
+allocated_duration = st.sidebar.selectbox("Duration", options=duration_choices, index=2)
 st.sidebar.divider()
 st.sidebar.header("📥 Sailor Log & Setup Profile")
 uploaded_file = st.sidebar.file_uploader("Upload .fit file", type=["fit"])
@@ -58,20 +61,21 @@ if sailor_name:
     specs = st.session_state.race_specs[active_race][sailor_name]
     tp_options = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
     specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", options=tp_options, index=tp_options.index(specs["tire_pressure"]))
-    bh_options =
+    
+    # FIXED: Filled in your exact boom height gaps
+    bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm)", options=bh_options, index=bh_options.index(specs["boom_height"]))
     
-    # FIXED: Matches defaults perfectly to avoid the value crash
     ss_options = ["3", "3.5", "4.5", "5.5", "6.2"]
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=ss_options, index=ss_options.index(specs["sail_size"]))
     specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
-col_map, col_data = st.columns([2.5, 1.5])
+    col_map, col_data = st.columns([2.5, 1.5])
 with col_map:
     st.subheader("🗺️ Performance Vector Map")
     center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
-        center_lat = df_track["Latitude"].iloc
-        center_lon = df_track["Longitude"].iloc
+        center_lat = df_track["Latitude"].iloc[0]
+        center_lon = df_track["Longitude"].iloc[0]
 
     fig = go.Figure()
     if not df_track.empty:
@@ -89,7 +93,6 @@ with col_map:
             text=df_markers["Label"], textposition="top center", name="Marks"
         ))
 
-    # FIXED: Uses high-performance built-in fast open vector styles
     fig.update_layout(
         map=dict(style="open-street-map", center=dict(lat=center_lat, lon=center_lon), zoom=14),
         margin=dict(r=0, t=0, l=0, b=0), height=500
@@ -125,3 +128,4 @@ if active_race in st.session_state.race_specs:
         })
 if fleet_rows:
     st.table(pd.DataFrame(fleet_rows))
+    
