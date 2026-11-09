@@ -169,7 +169,7 @@ with col_data:
         marker_records.append({"Seq ID": c_id, "Description": type_lbl, "Latitude": round(pt[0], 5), "Longitude": round(pt[1], 5)})
 
     if marker_records:
-        st.dataframe(pd.DataFrame(marker_records), index=None, use_container_width=True)
+        st.dataframe(pd.DataFrame(marker_records), use_container_width=True, hide_index=True)
     else:
         st.text("No layout markers set yet.")
 
