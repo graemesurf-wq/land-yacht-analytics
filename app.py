@@ -31,7 +31,6 @@ total_races = st.sidebar.number_input("Total Races", min_value=1, max_value=20, 
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race", options=race_options)
 
-# FIXED: Filled out the exact racing duration rules cleanly
 duration_choices = [10, 15, 20, 25, 30]
 allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=duration_choices, index=2)
 
@@ -52,7 +51,6 @@ if sailor_name:
     specs = st.session_state.race_specs[active_race][sailor_name]
     specs["tire_pressure"] = st.sidebar.selectbox("Tires (Bar)", options=[1.0, 1.2, 1.4, 1.6, 1.8, 2.0], index=[1.0, 1.2, 1.4, 1.6, 1.8, 2.0].index(specs["tire_pressure"]))
     
-    # FIXED: Filled out the exact boom gap centimeter requirements cleanly
     bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
     specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", options=bh_options, index=bh_options.index(specs["boom_height"]))
     
@@ -63,8 +61,8 @@ if sailor_name:
 col_map, col_data = st.columns([2.5, 1.5])
 
 with col_map:
-    st.subheader("🗺️ Performance Vector Map")
-    st.caption("💡 Upload a .fit file first, then click directly on the yellow track line to place your markers!")
+    st.subheader("🗺️ Performance Satellite Map")
+    st.caption("💡 Zoom cleanly with your scroll wheel. Click anywhere on the map grid to place your markers!")
     
     center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
@@ -72,41 +70,51 @@ with col_map:
         center_lon = df_track["Longitude"].iloc[0]
 
     fig = go.Figure()
+    
+    # Layer 1: Plot the bright yellow yacht track vector line if a file is loaded
     if not df_track.empty:
-        fig.add_trace(go.Scattermap(
+        fig.add_trace(go.Scattermapbox(
             lat=df_track["Latitude"], lon=df_track["Longitude"], mode="lines",
-            line=dict(width=4, color="yellow"), name="Track", text="Click to add mark"
+            line=dict(width=4, color="yellow"), name="Track"
         ))
 
+    # Layer 2: Render markers from state memory
     markers = [m for m in st.session_state.course_log if m.get("race") == active_race]
     if markers:
         df_markers = pd.DataFrame(markers)
-        fig.add_trace(go.Scattermap(
+        fig.add_trace(go.Scattermapbox(
             lat=df_markers["Latitude"], lon=df_markers["Longitude"], mode="markers+text",
             marker=dict(size=14, color=df_markers["Color"]), text=df_markers["Label"], textposition="top center", name="Marks"
         ))
-        if len(markers) >= 2: fig.add_trace(go.Scattermap(lat=[markers["Latitude"].iloc[0], markers["Latitude"].iloc[1]], lon=[markers["Longitude"].iloc[0], markers["Longitude"].iloc[1]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
-        if len(markers) >= 4: fig.add_trace(go.Scattermap(lat=[markers["Latitude"].iloc[2], markers["Latitude"].iloc[3]], lon=[markers["Longitude"].iloc[2], markers["Longitude"].iloc[3]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
+        
+        # Connect Gates visually using straight dashed lines
+        if len(markers) >= 2:
+            fig.add_trace(go.Scattermapbox(lat=[markers[0]["Latitude"], markers[1]["Latitude"]], lon=[markers[0]["Longitude"], markers[1]["Longitude"]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
+        if len(markers) >= 4:
+            fig.add_trace(go.Scattermapbox(lat=[markers[2]["Latitude"], markers[3]["Latitude"]], lon=[markers[2]["Longitude"], markers[3]["Longitude"]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
 
-    # FIXED HERE: Loaded high-speed open vector satellite base layers for smooth pan/zoom
+    # FIXED: Layout uses mapbox to match newer library environments and attaches the high-res imagery
     fig.update_layout(
-        map=dict(
+        mapbox=dict(
             style="white-bg",
             layers=[{
-                "zoom": 0, "sourcetype": "raster",
+                "below": "traces", "sourcetype": "raster",
                 "source": ["https://arcgisonline.com{z}/{y}/{x}"]
             }],
             center=dict(lat=center_lat, lon=center_lon), zoom=14
         ), 
         margin=dict(r=0, t=0, l=0, b=0), height=500
     )
+    
+    # Capture map clicks cleanly from anywhere on the grid layout
     map_click = st.plotly_chart(fig, use_container_width=True, on_click=True)
 
-    if map_click and map_click.get("points") and map_click["points"].get("point_index"):
-        pt_idx = map_click["points"]["point_index"]
-        if not df_track.empty and pt_idx < len(df_track):
-            c_lat = df_track["Latitude"].iloc[pt_idx]
-            c_lon = df_track["Longitude"].iloc[pt_idx]
+    if map_click and map_click.get("points") and map_click["points"].get("mapbox_clicks"):
+        click_data = map_click["points"]["mapbox_clicks"][0]
+        c_lat = click_data.get("lat")
+        c_lon = click_data.get("lon")
+        
+        if c_lat and c_lon:
             c_num = len(markers) + 1
             if c_num <= 10:
                 if c_num == 1: lbl, clr = "Start Line A", "green"
@@ -115,7 +123,11 @@ with col_map:
                 elif c_num == 4: lbl, clr = "Finish Line B", "red"
                 else: lbl, clr = f"Cone {c_num - 4}", "orange"
                 
-                st.session_state.course_log.append({"race": active_race, "Seq ID": c_num, "Label": lbl, "Description": "Gate" if c_num<=4 else f"Mark Cone {c_num-4}", "Latitude": c_lat, "Longitude": c_lon, "Color": clr})
+                st.session_state.course_log.append({
+                    "race": active_race, "Seq ID": c_num, "Label": lbl, 
+                    "Description": "Gate" if c_num<=4 else f"Mark Cone {c_num-4}", 
+                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                })
                 st.rerun()
 
     c1, c2 = st.columns(2)
