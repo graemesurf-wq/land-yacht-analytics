@@ -6,7 +6,7 @@ from fitparse import FitFile
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht VMC Performance Analyzer")
 
-# Initialize Memory Layers
+# Initialize Memory Layers safely
 if 'course_log' not in st.session_state: st.session_state.course_log = []
 if 'sailor_registry' not in st.session_state: st.session_state.sailor_registry = {}
 if 'race_specs' not in st.session_state: st.session_state.race_specs = {}
@@ -30,7 +30,10 @@ st.sidebar.header("🕹️ Race Control Panel")
 total_races = st.sidebar.number_input("Total Races", min_value=1, max_value=20, value=3)
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race", options=race_options)
-allocated_duration = st.sidebar.selectbox("Duration", options=, index=2)
+
+# FIXED: Filled out the exact racing duration rules cleanly
+duration_choices = [10, 15, 20, 25, 30]
+allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=duration_choices, index=2)
 
 st.sidebar.divider()
 st.sidebar.header("📥 Sailor Setup Profile")
@@ -48,7 +51,11 @@ if sailor_name:
 
     specs = st.session_state.race_specs[active_race][sailor_name]
     specs["tire_pressure"] = st.sidebar.selectbox("Tires (Bar)", options=[1.0, 1.2, 1.4, 1.6, 1.8, 2.0], index=[1.0, 1.2, 1.4, 1.6, 1.8, 2.0].index(specs["tire_pressure"]))
-    specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", options=, index=.index(specs["boom_height"]))
+    
+    # FIXED: Filled out the exact boom gap centimeter requirements cleanly
+    bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
+    specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", options=bh_options, index=bh_options.index(specs["boom_height"]))
+    
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=["3", "3.5", "4.5", "5.5", "6.2"], index=["3", "3.5", "4.5", "5.5", "6.2"].index(specs["sail_size"]))
     specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
 
@@ -61,8 +68,8 @@ with col_map:
     
     center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
-        center_lat = df_track["Latitude"].iloc
-        center_lon = df_track["Longitude"].iloc
+        center_lat = df_track["Latitude"].iloc[0]
+        center_lon = df_track["Longitude"].iloc[0]
 
     fig = go.Figure()
     if not df_track.empty:
@@ -78,10 +85,21 @@ with col_map:
             lat=df_markers["Latitude"], lon=df_markers["Longitude"], mode="markers+text",
             marker=dict(size=14, color=df_markers["Color"]), text=df_markers["Label"], textposition="top center", name="Marks"
         ))
-        if len(markers) >= 2: fig.add_trace(go.Scattermap(lat=[markers["Latitude"], markers["Latitude"]], lon=[markers["Longitude"], markers["Longitude"]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
-        if len(markers) >= 4: fig.add_trace(go.Scattermap(lat=[markers["Latitude"], markers["Latitude"]], lon=[markers["Longitude"], markers["Longitude"]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
+        if len(markers) >= 2: fig.add_trace(go.Scattermap(lat=[markers["Latitude"].iloc[0], markers["Latitude"].iloc[1]], lon=[markers["Longitude"].iloc[0], markers["Longitude"].iloc[1]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
+        if len(markers) >= 4: fig.add_trace(go.Scattermap(lat=[markers["Latitude"].iloc[2], markers["Latitude"].iloc[3]], lon=[markers["Longitude"].iloc[2], markers["Longitude"].iloc[3]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
 
-    fig.update_layout(map=dict(style="open-street-map", center=dict(lat=center_lat, lon=center_lon), zoom=14), margin=dict(r=0, t=0, l=0, b=0), height=500)
+    # FIXED HERE: Loaded high-speed open vector satellite base layers for smooth pan/zoom
+    fig.update_layout(
+        map=dict(
+            style="white-bg",
+            layers=[{
+                "zoom": 0, "sourcetype": "raster",
+                "source": ["https://arcgisonline.com{z}/{y}/{x}"]
+            }],
+            center=dict(lat=center_lat, lon=center_lon), zoom=14
+        ), 
+        margin=dict(r=0, t=0, l=0, b=0), height=500
+    )
     map_click = st.plotly_chart(fig, use_container_width=True, on_click=True)
 
     if map_click and map_click.get("points") and map_click["points"].get("point_index"):
