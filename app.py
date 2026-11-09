@@ -53,8 +53,12 @@ if st.sidebar.button("📋 Copy Course Layout from Previous Race"):
 
 st.sidebar.divider()
 
-# Sailor Profile Setup
+# Sailor Profile Setup & File Upload
 st.sidebar.header("📥 Sailor Log & Setup Profile")
+
+# --- HERE IS YOUR FILE UPLOAD GATEWAY ---
+uploaded_file = st.sidebar.file_uploader("Upload your XOSS .fit file", type=["fit"])
+
 sailor_name = st.sidebar.text_input("Sailor Name / Yacht Number", placeholder="e.g., Yacht 42")
 
 if sailor_name:
@@ -88,7 +92,7 @@ if sailor_name:
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=ss_options, index=ss_options.index(specs["sail_size"]))
     
     specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", min_value=60, max_value=110, value=int(specs["race_weight"]))
-  # --- MAIN AREA LAYOUT (MAP AND TABLES) ---
+# --- MAIN AREA LAYOUT (MAP AND TABLES) ---
 col_map, col_data = st.columns([2.5, 1.5])
 
 with col_map:
@@ -161,7 +165,7 @@ with col_data:
         if c_id == 1 or c_id == 2: type_lbl = "Start Gate"
         elif c_id == 3 or c_id == 4: type_lbl = "Finish Gate"
         else: type_lbl = f"Course Mark Cone {c_id - 4}"
-        marker_records.append({"Seq ID": c_id, "Description": type_lbl, "Latitude": round(pt[0], 5), "Longitude": round(pt[1], 5)})
+        marker_records.append({"Seq ID": c_id, "Description": type_lbl, "Latitude": round(pt, 5), "Longitude": round(pt, 5)})
 
     if marker_records:
         st.dataframe(pd.DataFrame(marker_records), index=None, use_container_width=True)
@@ -177,12 +181,15 @@ st.caption(f"Allocated Clock Threshold: {allocated_duration} Minutes.")
 fleet_rows = []
 if active_race in st.session_state.race_specs:
     for name, tuning in st.session_state.race_specs[active_race].items():
+        # Display file upload feedback inside the status columns
+        file_status = "✅ File Uploaded" if uploaded_file else "⏳ Awaiting File"
         fleet_rows.append({
             "Yacht Identifier": name,
             "Sail Size": tuning["sail_size"],
             "Weight (kg)": tuning["race_weight"],
             "Boom Gap (cm)": tuning["boom_height"],
             "Tires (Bar)": tuning["tire_pressure"],
+            "Data Status": file_status,
             "Distance (km)": "0.00",
             "Avg Speed": "0.0 kph",
             "VMC": "0.0 kph"
