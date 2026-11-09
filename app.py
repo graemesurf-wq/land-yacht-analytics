@@ -36,7 +36,6 @@ def extract_track_points(uploaded_file):
         return pd.DataFrame(records)
     except:
         return pd.DataFrame()
-
 st.sidebar.header("🕹️ Race Control Panel")
 total_races = st.sidebar.number_input("Total Races for the Day", min_value=1, max_value=20, value=3)
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
@@ -78,7 +77,6 @@ if sailor_name:
     if sailor_name not in st.session_state.race_specs[active_race]:
         current_idx = race_options.index(active_race)
         prev_race = race_options[current_idx - 1] if current_idx > 0 else None
-        
         if prev_race and prev_race in st.session_state.race_specs and sailor_name in st.session_state.race_specs[prev_race]:
             st.session_state.race_specs[active_race][sailor_name] = dict(st.session_state.race_specs[prev_race][sailor_name])
         else:
@@ -89,14 +87,11 @@ if sailor_name:
     specs = st.session_state.race_specs[active_race][sailor_name]
     tp_options = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
     specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", options=tp_options, index=tp_options.index(specs["tire_pressure"]))
-    
     bh_options =
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm gap)", options=bh_options, index=bh_options.index(specs["boom_height"]))
-    
     ss_options = ["3", "3.5", "4.5", "5.5", "6.2"]
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=ss_options, index=ss_options.index(specs["sail_size"]))
     specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", min_value=60, max_value=110, value=int(specs["race_weight"]))
-# --- MAIN SCREEN ARENA LAYOUT AREA ---
 col_map, col_data = st.columns([2.5, 1.5])
 active_markers = [m for m in st.session_state.course_log if m.get("race") == active_race]
 
@@ -106,11 +101,10 @@ with col_map:
     
     center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
-        center_lat = df_track["Latitude"].iloc[0]
-        center_lon = df_track["Longitude"].iloc[0]
+        center_lat = df_track["Latitude"].iloc
+        center_lon = df_track["Longitude"].iloc
 
     fig = go.Figure()
-    
     if not df_track.empty:
         fig.add_trace(go.Scattermapbox(
             lat=df_track["Latitude"], lon=df_track["Longitude"],
@@ -124,11 +118,10 @@ with col_map:
             mode="markers+text", marker=dict(size=14, color=df_markers["Color"]),
             text=df_markers["Label"], textposition="top center", name="Course Markers"
         ))
-        
         if len(active_markers) >= 2:
-            fig.add_trace(go.Scattermapbox(lat=[active_markers[0]["Latitude"], active_markers[1]["Latitude"]], lon=[active_markers[0]["Longitude"], active_markers[1]["Longitude"]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
+            fig.add_trace(go.Scattermapbox(lat=[active_markers["Latitude"], active_markers["Latitude"]], lon=[active_markers["Longitude"], active_markers["Longitude"]], mode="lines", line=dict(width=2, color="green", dash="dash"), showlegend=False))
         if len(active_markers) >= 4:
-            fig.add_trace(go.Scattermapbox(lat=[active_markers[2]["Latitude"], active_markers[3]["Latitude"]], lon=[active_markers[2]["Longitude"], active_markers[3]["Longitude"]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
+            fig.add_trace(go.Scattermapbox(lat=[active_markers["Latitude"], active_markers["Latitude"]], lon=[active_markers["Longitude"], active_markers["Longitude"]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
 
     fig.update_layout(
         mapbox=dict(
@@ -148,7 +141,6 @@ with col_map:
         click_data = map_click["points"]["mapbox_clicks"]
         c_lat = click_data.get("lat")
         c_lon = click_data.get("lon")
-        
         if c_lat and c_lon:
             c_num = len(active_markers) + 1
             if c_num <= 10:
@@ -157,7 +149,6 @@ with col_map:
                 elif c_num == 3: lbl, clr = "Finish Line A", "red"
                 elif c_num == 4: lbl, clr = "Finish Line B", "red"
                 else: lbl, clr = f"Cone {c_num - 4}", "orange"
-                
                 st.session_state.course_log.append({
                     "race": active_race, "Seq ID": c_num, "Label": lbl, 
                     "Description": "Gate Components" if c_num<=4 else f"Course Cone {c_num-4}", 
@@ -179,41 +170,21 @@ with col_map:
 
 with col_data:
     st.subheader("📋 Active Course Definition Log")
-    num_markers = len(active_markers)
-    if num_markers == 0: st.info("👉 Click on the satellite image grid to place **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click to place **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click to place **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click to place **Finish Line Marker B**.")
-    elif 4 <= num_markers < 10: st.success(f"Gates locked. Cones left to drop: {10 - num_markers} (Minimum 2 cones needed).")
-    else: st.warning("Max capacity of 6 Cones reached (10 total markers). Layout locked.")
-
     if active_markers:
-        df_log = pd.DataFrame(active_markers)[["Seq ID", "Description", "Latitude", "Longitude"]]
-        st.dataframe(df_log, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(active_markers)[["Seq ID", "Description", "Latitude", "Longitude"]], use_container_width=True, hide_index=True)
     else:
-        st.text("No geometric layout anchors mapped to memory arrays yet.")
+        st.text("No geometric layout anchors mapped yet.")
 
 st.divider()
 st.subheader(f"📊 Performance Leaderboard Matrix — {active_race}")
-st.caption(f"Allocated Clock Threshold: {allocated_duration} Minutes.")
-
 fleet_rows = []
 if active_race in st.session_state.race_specs:
     for name, tuning in st.session_state.race_specs[active_race].items():
-        file_status = "✅ File Loaded" if uploaded_file and not df_track.empty else ("❌ Empty File Track" if uploaded_file else "⏳ Awaiting File")
+        file_status = "✅ File Loaded" if uploaded_file and not df_track.empty else ("❌ Empty File" if uploaded_file else "⏳ Awaiting File")
         fleet_rows.append({
-            "Yacht Identifier": name,
-            "Sail Size": tuning["sail_size"],
-            "Weight (kg)": tuning["race_weight"],
-            "Boom Gap (cm)": tuning["boom_height"],
-            "Tires (Bar)": tuning["tire_pressure"],
-            "Data Status": file_status,
-            "Distance (km)": "0.00",
-            "Avg Speed": "0.0 kph",
-            "VMC": "0.0 kph"
+            "Yacht Identifier": name, "Sail Size": tuning["sail_size"], "Weight (kg)": tuning["race_weight"],
+            "Boom Gap (cm)": tuning["boom_height"], "Tires (Bar)": tuning["tire_pressure"],
+            "Data Status": file_status, "Distance (km)": "0.00", "Avg Speed": "0.0 kph", "VMC": "0.0 kph"
         })
-
 if fleet_rows:
     st.table(pd.DataFrame(fleet_rows))
-else:
-    st.info("No active sailors logged with configurations for this race sequence yet. Enter a name in the sidebar profile box to review configuration mapping behavior.")
