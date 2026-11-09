@@ -6,7 +6,7 @@ from fitparse import FitFile
 st.set_page_config(page_title="Land Yacht Analytics", layout="wide")
 st.title("⛵ Land Yacht VMC Performance Analyzer")
 
-# Initialize memory banks
+# Initialize memory banks safely
 if 'sailor_registry' not in st.session_state: st.session_state.sailor_registry = {}
 if 'race_specs' not in st.session_state: st.session_state.race_specs = {}
 if 'manual_course' not in st.session_state: st.session_state.manual_course = {}
@@ -20,7 +20,7 @@ def extract_fit_data(uploaded_file):
         for record in fitfile.get_messages('record'):
             lat = record.get_value('position_lat')
             lon = record.get_value('position_long')
-            speed = record.get_value('speed') # raw m/s
+            speed = record.get_value('speed') # raw m/s from device
             timestamp = record.get_value('timestamp')
             
             if timestamp is not None:
@@ -43,7 +43,10 @@ st.sidebar.header("🕹️ Race Configuration")
 total_races = st.sidebar.number_input("Total Races", min_value=1, max_value=20, value=3)
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race", options=race_options)
-allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=, index=2)
+
+# FIXED: Explicitly filled out the duration values
+duration_choices = [10, 15, 20, 25, 30]
+allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=duration_choices, index=2)
 
 st.sidebar.divider()
 st.sidebar.header("📥 Sailor Setup Profile")
@@ -62,11 +65,16 @@ if sailor_name:
 
     specs = st.session_state.race_specs[active_race][sailor_name]
     specs["tire_pressure"] = st.sidebar.selectbox("Tires (Bar)", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0], index=[1.0, 1.2, 1.4, 1.6, 1.8, 2.0].index(specs["tire_pressure"]))
-    specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", , index=.index(specs["boom_height"]))
+    
+    # FIXED: Explicitly filled out the boom heights values
+    bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
+    specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", bh_options, index=bh_options.index(specs["boom_height"]))
+    
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", ["3", "3.5", "4.5", "5.5", "6.2"], index=["3", "3.5", "4.5", "5.5", "6.2"].index(specs["sail_size"]))
     specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
-    # --- MAIN AREA LAYOUT ---
-col_course, col_status = st.columns([2, 2])
+
+# --- MAIN AREA LAYOUT ---
+col_course, col_status = st.columns(2)
 
 with col_course:
     st.subheader(f"📐 Numeric Course Coordinate Logger - {active_race}")
@@ -76,12 +84,11 @@ with col_course:
         st.session_state.manual_course[active_race] = {
             "Start_A_Lat": 0.0, "Start_A_Lon": 0.0, "Start_B_Lat": 0.0, "Start_B_Lon": 0.0,
             "Finish_A_Lat": 0.0, "Finish_A_Lon": 0.0, "Finish_B_Lat": 0.0, "Finish_B_Lon": 0.0,
-            "Num_Cones": 2, "Cone_Coordinates": []
+            "Num_Cones": 2
         }
     
     course = st.session_state.manual_course[active_race]
     
-    # Text input configuration blocks for the gates
     st.markdown("**🏁 Start Gate Coordinates**")
     g1, g2 = st.columns(2)
     course["Start_A_Lat"] = g1.number_input("Start Marker A Latitude", value=course["Start_A_Lat"], format="%.6f")
@@ -134,4 +141,3 @@ if active_race in st.session_state.race_specs:
 
 if fleet_rows:
     st.table(pd.DataFrame(fleet_rows))
-    
