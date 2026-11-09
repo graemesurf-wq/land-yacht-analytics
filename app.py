@@ -99,8 +99,8 @@ col_map, col_data = st.columns([2.5, 1.5])
 with col_map:
     st.subheader(f"🗺️ Course Mapping Canvas - {active_race}")
     
-    # Generate the map using satellite backgrounds
-    m = folium.Map(location=[51.5074, -0.1278], zoom_start=14, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri")
+    # CHANGED HERE: Switched to OpenStreetMap for reliable loading
+    m = folium.Map(location=[51.5074, -0.1278], zoom_start=14, tiles="OpenStreetMap")
     
     current_markers = st.session_state.course_log[active_race]
     for idx, pt in enumerate(current_markers):
