@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
+from fitparse import FitFile
 
 # Set up the look of the web page
 st.set_page_config(
@@ -16,13 +17,29 @@ st.markdown("Foundational framework for course layout definitions and fleet conf
 
 # Set up the memory banks to remember our data
 if 'course_log' not in st.session_state:
-    st.session_state.course_log = {}  # Stores cone locations per race
+    st.session_state.course_log = {}
 
 if 'sailor_registry' not in st.session_state:
-    st.session_state.sailor_registry = {}  # Stores permanent sailor names
+    st.session_state.sailor_registry = {}
 
 if 'race_specs' not in st.session_state:
-    st.session_state.race_specs = {}  # Stores changeable tire and sail settings
+    st.session_state.race_specs = {}
+
+# Helper function to extract GPS path out of an uploaded .fit file
+def extract_track_points(uploaded_file):
+    try:
+        uploaded_file.seek(0)
+        fitfile = FitFile(uploaded_file.read())
+        points = []
+        for record in fitfile.get_messages('record'):
+            lat = record.get_value('position_lat')
+            lon = record.get_value('position_long')
+            if lat is not None and lon is not None:
+                # Convert semicircles to standard GPS degrees safely
+                points.append([lat * (180.0 / 2**31), lon * (180.0 / 2**31)])
+        return points
+    except:
+        return []
 
 # --- SIDEBAR PANEL (LEFT SIDE OF SCREEN) ---
 st.sidebar.header("🕹️ Race Control Panel")
@@ -31,14 +48,12 @@ total_races = st.sidebar.number_input("Total Races for the Day", min_value=1, ma
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race to Configure", options=race_options)
 
-# Dropdown for the race duration limits
 duration_choices = [10, 15, 20, 25, 30]
 allocated_duration = st.sidebar.selectbox("Allocated Race Duration", options=duration_choices, index=2, format_func=lambda x: f"{x} Minutes")
 
 if active_race not in st.session_state.course_log:
     st.session_state.course_log[active_race] = []
 
-# Button to copy the layout from the previous race
 if st.sidebar.button("📋 Copy Course Layout from Previous Race"):
     current_idx = race_options.index(active_race)
     if current_idx > 0:
@@ -52,14 +67,14 @@ if st.sidebar.button("📋 Copy Course Layout from Previous Race"):
         st.sidebar.error("This is the first race. No previous course exists.")
 
 st.sidebar.divider()
-
-# Sailor Profile Setup & File Upload
 st.sidebar.header("📥 Sailor Log & Setup Profile")
 
-# The file upload gateway
 uploaded_file = st.sidebar.file_uploader("Upload your XOSS .fit file", type=["fit"])
-
 sailor_name = st.sidebar.text_input("Sailor Name / Yacht Number", placeholder="e.g., Yacht 42")
+
+track_points = []
+if uploaded_file:
+    track_points = extract_track_points(uploaded_file)
 
 if sailor_name:
     if sailor_name not in st.session_state.sailor_registry:
@@ -71,36 +86,47 @@ if sailor_name:
         current_idx = race_options.index(active_race)
         prev_race = race_options[current_idx - 1] if current_idx > 0 else None
         
-        # Sticky behavior: copy previous specs if they exist
         if prev_race and prev_race in st.session_state.race_specs and sailor_name in st.session_state.race_specs[prev_race]:
             st.session_state.race_specs[active_race][sailor_name] = dict(st.session_state.race_specs[prev_race][sailor_name])
         else:
             st.session_state.race_specs[active_race][sailor_name] = {
-                "tire_pressure": 1.4, "boom_height": 25, "sail_size": "5.0m", "race_weight": 85
+                "tire_pressure": 1.4, "boom_height": 25, "sail_size": "5.5m", "race_weight": 85
             }
 
     specs = st.session_state.race_specs[active_race][sailor_name]
     
-    # Dropdowns restricting configurations to your exact rule choices
     tp_options = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
     specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", options=tp_options, index=tp_options.index(specs["tire_pressure"]))
     
     bh_options = [15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48]
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm gap)", options=bh_options, index=bh_options.index(specs["boom_height"]))
     
-    ss_options = ["3.0m", "3.5m", "4.0m", "5.0m", "5.5m", "6.2m"]
+    ss_options = ["3.0m", "3.5m", "4.5m", "5.5m", "6.2m"]
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", options=ss_options, index=ss_options.index(specs["sail_size"]))
     
     specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", min_value=60, max_value=110, value=int(specs["race_weight"]))
-
-# --- MAIN AREA LAYOUT (MAP AND TABLES) ---
+    # --- MAIN AREA LAYOUT (MAP AND TABLES) ---
 col_map, col_data = st.columns([2.5, 1.5])
 
 with col_map:
     st.subheader(f"🗺️ Course Mapping Canvas - {active_race}")
     
-    # CHANGED HERE: Switched to OpenStreetMap for reliable loading
-    m = folium.Map(location=[51.5074, -0.1278], zoom_start=14, tiles="OpenStreetMap")
+    # Default map view center
+    map_center = [51.5074, -0.1278]
+    # FIXED: Safely center the map on the very first GPS point of your loaded track
+    if len(track_points) > 0:
+        map_center = track_points[0]
+        
+    m = folium.Map(
+        location=map_center, 
+        zoom_start=14, 
+        tiles="https://arcgisonline.com{z}/{y}/{x}", 
+        attr="Esri Satellite"
+    )
+    
+    # Render the bright yellow yacht track layer onto the satellite beach
+    if len(track_points) > 0:
+        folium.PolyLine(track_points, color="yellow", weight=3, opacity=0.9).add_to(m)
     
     current_markers = st.session_state.course_log[active_race]
     for idx, pt in enumerate(current_markers):
@@ -118,13 +144,11 @@ with col_map:
     if len(current_markers) >= 4:
         folium.PolyLine(current_markers[2:4], color="red", weight=3, dash_array="5, 5").add_to(m)
 
-    # Capture click data from the user's screen mouse click
     map_output = st_folium(m, width=700, height=500, key=f"folium_map_{active_race}")
     
     if map_output and map_output.get("last_clicked"):
         click_coord = [map_output["last_clicked"]["lat"], map_output["last_clicked"]["lng"]]
         
-        # Lock clicking once we hit 10 markers (2 start + 2 finish + 6 cones max)
         if len(st.session_state.course_log[active_race]) < 10:
             if not st.session_state.course_log[active_race] or st.session_state.course_log[active_race][-1] != click_coord:
                 st.session_state.course_log[active_race].append(click_coord)
@@ -159,7 +183,6 @@ with col_data:
     else:
         st.warning("Max capacity of 6 Cones reached. Layout locked.")
 
-    # Format the coordinates data safely to display on the screen
     marker_records = []
     for idx, pt in enumerate(current_markers):
         c_id = idx + 1
@@ -182,7 +205,7 @@ st.caption(f"Allocated Clock Threshold: {allocated_duration} Minutes.")
 fleet_rows = []
 if active_race in st.session_state.race_specs:
     for name, tuning in st.session_state.race_specs[active_race].items():
-        file_status = "✅ File Uploaded" if uploaded_file else "⏳ Awaiting File"
+        file_status = "✅ File Loaded" if uploaded_file and len(track_points) > 0 else ("❌ Empty File Track" if uploaded_file else "⏳ Awaiting File")
         fleet_rows.append({
             "Yacht Identifier": name,
             "Sail Size": tuning["sail_size"],
