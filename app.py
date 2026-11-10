@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("👉 Check the boxes in the list below to assign your Start/Finish gates and course cones.")
+st.markdown("👉 Hover along the blue racing track line to trace your turns, then click directly on the line to place your gates and cones.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -40,61 +41,61 @@ if sailor_name:
     specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", (1.0, 1.2, 1.4, 1.6, 1.8, 2.0), index=(1.0, 1.2, 1.4, 1.6, 1.8, 2.0).index(specs["tire_pressure"]))
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm)", (15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48), index=(15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48).index(specs["boom_height"]))
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", ("3", "3.5", "4.5", "5.5", "6.2"), index=("3", "3.5", "4.5", "5.5", "6.2").index(specs["sail_size"]))
-    specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
+    specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", 60, 110, int(specs["race_weight"]))
 
 # --- SCREEN MAIN LAYOUT AREA ---
-col_list, col_log = st.columns([2.2, 1.8])
+col_map, col_data = st.columns([2.5, 1.5])
 current_markers = st.session_state.course_log[active_race]
 
-with col_list:
-    st.subheader("📋 Interactive Track Telemetry Selector")
+with col_map:
+    st.subheader(f"📈 Visual Performance Track - {active_race}")
     
     if not df_track.empty:
-        st.caption("💡 Scroll and check the box next to any point to assign it as the next sequential mark.")
+        # Standard Plotly graph line with hover labels turned on
+        fig = px.line(df_track, x="Lon", y="Lat", title="Yacht Sailing Path (Click on line to mark)", hover_data=["Time", "Kph"])
+        fig.update_traces(line=dict(color="blue", width=3.5))
         
-        # Add a selectable column to the track matrix
-        df_track["Assign Mark"] = False
+        # FIXED: Built-in native selection trigger that bypasses made-up click settings
+        chart_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
         
-        # Render Streamlit's native data editor component
-        edited_df = st.data_editor(
-            df_track[["Assign Mark", "Time", "Kph", "Lat", "Lon"]],
-            use_container_width=True,
-            hide_index=True,
-            disabled=["Time", "Kph", "Lat", "Lon"]
-        )
-        
-        # Check if a row checkbox was toggled
-        selected_rows = edited_df[edited_df["Assign Mark"] == True]
-        if len(selected_rows) > 0:
-            num_markers = len(current_markers)
-            if num_markers < 10:
-                c_num = num_markers + 1
-                if c_num == 1: lbl, clr = "Start Line A", "green"
-                elif c_num == 2: lbl, clr = "Start Line B", "green"
-                elif c_num == 3: lbl, clr = "Finish Line A", "red"
-                elif c_num == 4: lbl, clr = "Finish Line B", "red"
-                else: lbl, clr = f"Cone {c_num - 4}", "orange"
+        # Check if a point on the line trace was selected/clicked
+        if chart_event and "selection" in chart_event and "points" in chart_event["selection"]:
+            points_list = chart_event["selection"]["points"]
+            if len(points_list) > 0:
+                pt_idx = points_list[0].get("point_index")
                 
-                desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
-                target_row = selected_rows.iloc[0]
-                
-                st.session_state.course_log[active_race].append({
-                    "Seq ID": c_num, "Description": desc, "Label": lbl,
-                    "Latitude": float(target_row["Lat"]), "Longitude": float(target_row["Lon"]), "Color": clr
-                })
-                st.rerun()
+                if pt_idx is not None and pt_idx < len(df_track):
+                    c_lat = float(df_track["Lat"].iloc[pt_idx])
+                    c_lon = float(df_track["Lon"].iloc[pt_idx])
+                    num_markers = len(current_markers)
+                    
+                    if num_markers < 10:
+                        c_num = num_markers + 1
+                        if c_num == 1: lbl, clr = "Start Line A", "green"
+                        elif c_num == 2: lbl, clr = "Start Line B", "green"
+                        elif c_num == 3: lbl, clr = "Finish Line A", "red"
+                        elif c_num == 4: lbl, clr = "Finish Line B", "red"
+                        else: lbl, clr = f"Cone {c_num - 4}", "orange"
+                        
+                        desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
+                        
+                        st.session_state.course_log[active_race].append({
+                            "Seq ID": c_num, "Description": desc, "Label": lbl,
+                            "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                        })
+                        st.rerun()
     else:
-        st.info("Awaiting a .fit file upload to load the interactive data list.")
+        st.info("Awaiting a .fit file upload to map the visual track graph line.")
 
-with col_log:
-    st.subheader("📋 Locked Course Parameters")
+with col_data:
+    st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Check a row to lock **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Check a row to lock **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Check a row to lock **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Check a row to lock **Finish Line Marker B**.")
-    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones remaining: {10 - num_markers}")
-    else: st.warning("Layout locked.")
+    if num_markers == 0: st.info("👉 Click directly on a point on the blue path trace to lock **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Click the line path to lock **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Click the line path to lock **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Click the line path to lock **Finish Line Marker B**.")
+    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to assign: {10 - num_markers}")
+    else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
     if st.button("↩️ Undo Last Assignment", use_container_width=True):
         if st.session_state.course_log[active_race]:
