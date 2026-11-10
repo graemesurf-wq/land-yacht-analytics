@@ -39,8 +39,12 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
             if lat and lon:
                 points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
                 
-    # Center map on track data if available, else standard fallback
-    center = [points[0][0], points[0][1]] if points else [53.46, 9.98]
+    # Center map dynamically on reference track data if available
+    if points:
+        df_designer = pd.DataFrame(points, columns=["lat", "lon"])
+        center = [df_designer["lat"].mean(), df_designer["lon"].mean()]
+    else:
+        center = SAVED_COURSE["start_line"][0] if SAVED_COURSE["start_line"] else [53.46, 9.98]
     
     m = folium.Map(location=center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     if points:
@@ -66,12 +70,11 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
                 
         # Generate configuration block text safely using clean string encapsulation
         st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
-        st.sidebar.markdown("Copy this block and replace lines 13-23 in your `app.py` file code:")
+        st.sidebar.markdown("Copy this block and replace lines 14-24 in your `app.py` file code:")
         
         start_val = lines[0] if len(lines) >= 1 else []
         finish_val = lines[1] if len(lines) >= 2 else []
         
-        # We escape the markdown backticks using double double-quotes to prevent code parsing conflicts
         config_text = "```python\n"
         config_text += "SAVED_COURSE = {\n"
         config_text += f'    "start_line": {start_val},\n'
@@ -95,8 +98,29 @@ else:
     
     uploaded_file = st.file_uploader("Upload your .fit track file", type=["fit"])
     
-    # Initialize Map around the saved course start line
-    map_center = SAVED_COURSE["start_line"][0] if SAVED_COURSE["start_line"] else [53.46, 9.98]
+    # 1. Parse visitor track FIRST to check if we can adjust the map center coordinates
+    racer_points = []
+    if uploaded_file is not None:
+        fitfile = FitFile(uploaded_file.read())
+        for record in fitfile.get_messages("record"):
+            lat = record.get_value("position_lat")
+            lon = record.get_value("position_long")
+            if lat and lon:
+                racer_points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
+    
+    # 2. DYNAMIC SNAP LOGIC: Determine where to center the map viewport
+    if len(racer_points) > 0:
+        # If a racer has uploaded a track, find its exact center to snap right to it
+        df_racer = pd.DataFrame(racer_points, columns=["lat", "lon"])
+        map_center = [df_racer["lat"].mean(), df_racer["lon"].mean()]
+    elif SAVED_COURSE["start_line"] and len(SAVED_COURSE["start_line"]) > 0:
+        # Fallback to the saved start line coordinate position
+        map_center = SAVED_COURSE["start_line"][0]
+    else:
+        # Global generic coordinate fallback
+        map_center = [53.46, 9.98]
+        
+    # 3. Initialize the Map Canvas using the newly calculated dynamic map focus point
     m = folium.Map(location=map_center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
@@ -116,21 +140,13 @@ else:
     for idx, mark in enumerate(SAVED_COURSE["marks"]):
         folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors[idx % len(colors)], icon="info-sign")).add_to(m)
         
-    # Parse and plot the visitor's track over the static layout
+    # 4. Draw visitor track overlay securely onto the map
     if uploaded_file is not None:
-        fitfile = FitFile(uploaded_file.read())
-        racer_points = []
-        for record in fitfile.get_messages("record"):
-            lat = record.get_value("position_lat")
-            lon = record.get_value("position_long")
-            if lat and lon:
-                racer_points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
-                
         if len(racer_points) > 0:
-            # Draw visitor track in bright cyan
             folium.PolyLine(locations=racer_points, color="cyan", weight=5, opacity=0.85, tooltip="Your Uploaded Track").add_to(m)
             st.success("🎉 Your track was loaded successfully over the course map layout below!")
         else:
             st.error("No valid GPS data points found in your uploaded file.")
             
-    st_folium(m, width=1100, height=650, returned_objects=[])
+    st_folium(m, width=1100, height=650, key="racer_map", returned_objects=[])
+
