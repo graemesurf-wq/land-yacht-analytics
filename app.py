@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("👉 Click directly anywhere on the grid layout relative to the tracks to place your marks.")
+st.markdown("Isolate your racing arena layout parameters.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -56,83 +55,50 @@ col_map, col_data = st.columns([2.5, 1.5])
 current_markers = st.session_state.course_log[active_race]
 
 with col_map:
-    st.subheader(f"📈 Clickable Canvas Grid - {active_race}")
+    st.subheader(f"🗺️ Map Footprint - {active_race}")
     
-    # Set standard coordinate system boundaries if no track file is available
-    if df_track.empty:
-        df_track = pd.DataFrame([{"Lon": 0.0, "Lat": 0.0, "Kph": 0.0}])
-
-    # 1. Base Yacht Track Line Layer
-    track_chart = alt.Chart(df_track).mark_line(color="blue", strokeWidth=3).encode(
-        x=alt.X("Lon:Q", scale=alt.Scale(zero=False)),
-        y=alt.Y("Lat:Q", scale=alt.Scale(zero=False))
-    )
-
-    # 2. Click Interceptor Layer
-    click_selector = alt.selection_point(on="click", nearest=False, fields=["Lon", "Lat"], empty=False)
-    
-    interceptor = alt.Chart(df_track).mark_circle(opacity=0.0, size=200).encode(
-        x="Lon:Q", y="Lat:Q"
-    ).add_params(click_selector)
-
-    # 3. Mapped Course Marks Layer
-    if current_markers:
-        df_markers = pd.DataFrame(current_markers)
-        markers_chart = alt.Chart(df_markers).mark_circle(size=150).encode(
-            x="Longitude:Q", y="Latitude:Q", color=alt.Color("Color:N", scale=None)
-        )
-        final_chart = alt.layer(track_chart, interceptor, markers_chart).properties(width=700, height=500)
+    # Render native background map visualization if data rows are available
+    if not df_track.empty:
+        # Create separate map data columns for mapping display framework
+        map_df = df_track[["Lat", "Lon"]].rename(columns={"Lat": "latitude", "Lon": "longitude"})
+        st.map(map_df, color="#0000FF", size=5)
     else:
-        final_chart = alt.layer(track_chart, interceptor).properties(width=700, height=500)
-
-    # Render layout and track output actions safely
-    chart_selection = st.altair_chart(final_chart, on_select="rerun")
-
-    if chart_selection and chart_selection.get("selection") and chart_selection["selection"]:
-        # Extract selected values directly from the clicked coordinate parameters
-        sel_key = list(chart_selection["selection"].keys())[0]
-        sel_points = chart_selection["selection"][sel_key]
-        if isinstance(sel_points, list) and len(sel_points) > 0:
-            c_lon = float(sel_points[0].get("Lon", 0.0))
-            c_lat = float(sel_points[0].get("Lat", 0.0))
-            
-            num_markers = len(current_markers)
-            if num_markers < 10 and (c_lon != 0.0 or c_lat != 0.0):
-                c_num = num_markers + 1
-                if c_num == 1: lbl, clr = "Start Line A", "green"
-                elif c_num == 2: lbl, clr = "Start Line B", "green"
-                elif c_num == 3: lbl, clr = "Finish Line A", "red"
-                elif c_num == 4: lbl, clr = "Finish Line B", "red"
-                else: lbl, clr = f"Cone {c_num - 4}", "orange"
-                
-                desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
-                
-                st.session_state.course_log[active_race].append({
-                    "Seq ID": c_num, "Description": desc, "Label": lbl,
-                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
-                })
-                st.rerun()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("↩️ Undo Last", use_container_width=True):
-            if st.session_state.course_log[active_race]:
-                st.session_state.course_log[active_race].pop()
-                st.rerun()
-    with c2:
-        if st.button("🗑️ Clear Layout", use_container_width=True):
-            st.session_state.course_log[active_race] = []
-            st.rerun()
+        st.info("Awaiting a .fit file upload to map the track data coordinates.")
 
 with col_data:
-    st.subheader("📋 Course Definition Log")
+    st.subheader("📋 Course Definition Parameters")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click directly anywhere near the turning point to drop **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click to drop **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click to drop **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click to drop **Finish Line Marker B**.")
-    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to drop: {10 - num_markers} (Min 2 cones).")
-    else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
+    
+    # 4 to 10 manual location parameters entries
+    if not df_track.empty:
+        # Pull max/min limits from uploaded track file to prevent out of bounds typing
+        min_lat, max_lat = float(df_track["Lat"].min()), float(df_track["Lat"].max())
+        min_lon, max_lon = float(df_track["Lon"].min()), float(df_track["Lon"].max())
+        
+        st.write("Enter coordinates relative to the track limits to drop marks without crash errors.")
+        in_lat = st.number_input("Marker Latitude", min_value=min_lat-0.1, max_value=max_lat+0.1, value=min_lat, format="%.6f")
+        in_lon = st.number_input("Marker Longitude", min_value=min_lon-0.1, max_value=max_lon+0.1, value=min_lon, format="%.6f")
+
+        if num_markers < 4:
+            lbl = "Start Line A" if num_markers == 0 else ("Start Line B" if num_markers == 1 else ("Finish Line A" if num_markers == 2 else "Finish Line B"))
+            clr = "green" if num_markers < 2 else "red"
+            desc = "Gate"
+        else:
+            lbl = f"Cone {num_markers - 3}"
+            clr = "orange"
+            desc = "Cone Mark"
+
+        if num_markers < 10:
+            if st.button("➕ Log Marker Coordinate"):
+                st.session_state.course_log[active_race].append({"Seq ID": num_markers + 1, "Description": desc, "Label": lbl, "Latitude": in_lat, "Longitude": in_lon, "Color": clr})
+                st.rerun()
+        else:
+            st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
+
+    if st.button("↩️ Undo Last"):
+        if st.session_state.course_log[active_race]:
+            st.session_state.course_log[active_race].pop()
+            st.rerun()
 
     if current_markers:
         st.dataframe(pd.DataFrame(current_markers)[["Seq ID", "Description", "Latitude", "Longitude"]], use_container_width=True, hide_index=True)
