@@ -25,94 +25,92 @@ SAVED_COURSE = {
 def haversine_dist(p1, p2):
     if not p1 or not p2:
         return 999999
-    pt1 = p1 if not isinstance(p1, list) else p1[0] if len(p1) > 0 else p1
-    pt2 = p2 if not isinstance(p2, list) else p2[0] if len(p2) > 0 else p2
-    R = 6371000
-    phi1, phi2 = np.radians(pt1), np.radians(pt2)
-    dphi, dlon = np.radians(pt2 - pt1), np.radians(pt2 - pt1)
-    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-
-def line_intersection(p1, p2, p3, p4):
-    """Returns True if line segment p1-p2 intersects line segment p3-p4"""
-    def ccw(A, B, C):
-        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
-    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+    # Ensure p1 and p2 are flat lists [lat, lon]
+    pt1 = p1[0] if isinstance(p1, list) and len(p1) > 0 and isinstance(p1[0], list) else p1
+    pt2 = p2[0] if isinstance(p2, list) and len(p2) > 0 and isinstance(p2[0], list) else p2
+    
+    # Final unpack fallback if deeply nested
+    if isinstance(pt1, list) and len(pt1) > 0: pt1 = pt1[0] if isinstance(pt1[0], list) else pt1
+    if isinstance(pt2, list) and len(pt2) > 0: pt2 = pt2[0] if isinstance(pt2[0], list) else pt2
+    
+    try:
+        R = 6371000
+        phi1, phi2 = np.radians(pt1[0]), np.radians(pt2[0])
+        dphi = np.radians(pt2[0] - pt1[0])
+        dlon = np.radians(pt2[1] - pt1[1])
+        a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
+        return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+    except:
+        return 999999
 
 def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, course_marks, duration_list, max_races):
     """
-    First-Crossing Sync Engine: Scans all fleet tracks to find the exact moment the first boat
-    crosses the physical start line. Uses that timestamp as the absolute race start for everyone,
-    and validates the heat via the 5-minute Mark 1 rule.
+    First-Crossing Sync Engine: Scans fleet paths to find the exact moment the first boat
+    comes within close proximity (25m) of the Start Line center.
     """
     if not all_competitors_raw or not course_start or not course_marks:
         return {}
 
     mark1_pt = course_marks[0] if len(course_marks) > 0 else None
-    gate_finish_pt = course_finish if course_finish else course_start
+    gate_start_pt = course_start[0] if len(course_start) > 0 else course_start
+    gate_finish_pt = course_finish[0] if course_finish and len(course_finish) > 0 else gate_start_pt
     
-    # Define start line endpoints for vector intersection checking
-    s3, s4 = course_start[0], course_start[-1]
-    
-    # Step 1: Find all raw timestamps across the entire fleet where ANY boat crosses the start line
+    # Step 1: Find all timestamps where ANY boat is passing the start line gate
     start_crossings = []
     for c_name, records in all_competitors_raw.items():
-        for idx in range(len(records) - 1):
-            p1 = records[idx]["coords"]
-            p2 = records[idx+1]["coords"]
-            if line_intersection(p1, p2, s3, s4):
-                start_crossings.append(records[idx+1]["timestamp"])
+        for r in records:
+            if haversine_dist(r["coords"], gate_start_pt) < 25:
+                start_crossings.append(r["timestamp"])
 
     if not start_crossings:
-        return {c_name: [{"name": "Full Log (No Start Crossing Found)", "points": [r["coords"] for r in recs], "duration": 0.0}] for c_name, recs in all_competitors_raw.items()}
+        return {c_name: [{"name": "Full Log (No Start Trigger Found)", "points": [r["coords"] for r in recs], "duration": 0.0}] for c_name, recs in all_competitors_raw.items()}
 
-    # Sort crossings and cluster them to find distinct race starts
+    # Sort crossings and cluster them chronologically
     start_crossings.sort()
     race_start_anchors = []
     
-    current_cluster = [start_crossings[0]]
-    for t in start_crossings[1:]:
-        if (t - current_cluster[-1]).total_seconds() < 600: # 10 minute race separation buffer
-            current_cluster.append(t)
-        else:
-            # The official start time is the exact moment the FIRST boat crossed the line in this cluster
+    if start_crossings:
+        current_cluster = [start_crossings[0]]
+        for t in start_crossings[1:]:
+            if (t - current_cluster[-1]).total_seconds() < 600: # 10 min heat gap buffer
+                current_cluster.append(t)
+            else:
+                race_start_anchors.append(current_cluster[0]) # The first arrival is our T_zero
+                current_cluster = [t]
+        if current_cluster:
             race_start_anchors.append(current_cluster[0])
-            current_cluster = [t]
-    if current_cluster:
-        race_start_anchors.append(current_cluster[0])
 
-    # Step 2: Slice everyone's files using the exact same first-boat master anchors, then validate via Mark 1
+    # Step 2: Segment using master time templates, validating via Mark 1
     fleet_final_segmented_data = {}
     validated_race_count = 0
     
-    for c_name, records in all_competitors_raw.items():
+    for c_name in all_competitors_raw.keys():
         fleet_final_segmented_data[c_name] = []
         
-    for r_idx, master_start_t in enumerate(race_start_anchors):
+    for master_start_t in race_start_anchors:
         if validated_race_count >= max_races:
             break
             
         race_duration_mins = duration_list[validated_race_count] if validated_race_count < len(duration_list) else 20.0
         timer_expiry_t = master_start_t + timedelta(minutes=race_duration_mins)
         
-        # Step 3: Check if ANY boat in the fleet reaches Mark 1 within 5 minutes of this start crossing
+        # Step 3: Check if fleet hits Mark 1 within 5 minutes after start triggering
         race_is_valid = False
         if mark1_pt:
             for c_name, records in all_competitors_raw.items():
                 for r in records:
                     if master_start_t <= r["timestamp"] <= (master_start_t + timedelta(minutes=5)):
-                        if haversine_dist(r["coords"], mark1_pt) < 50:
+                        if haversine_dist(r["coords"], mark1_pt) < 60:
                             race_is_valid = True
                             break
-                if race_is_valid:
-                    break
+                if race_is_valid: break
         else:
-            race_is_valid = True # If no Mark 1 defined, default to valid
+            race_is_valid = True
             
         if not race_is_valid:
-            continue # Discard this start crossing cluster; it wasn't a real race event
+            continue
             
-        # Step 4: Extract the data for all competitors for this validated race window
+        # Step 4: Isolate clean synchronization lanes
         for c_name, records in all_competitors_raw.items():
             race_points = []
             found_finish = False
@@ -126,7 +124,7 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                         found_finish = True
                         break
                         
-            if len(race_points) > 30:
+            if len(race_points) > 20:
                 fleet_final_segmented_data[c_name].append({
                     "name": f"Race {validated_race_count + 1}",
                     "points": race_points,
@@ -135,14 +133,13 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                 
         validated_race_count += 1
 
-    # Clean up any competitors who didn't get any matched data slots
     for c_name in all_competitors_raw.keys():
         if not fleet_final_segmented_data[c_name]:
             fleet_final_segmented_data[c_name] = [{"name": "Full Log Run (No Sync Matches)", "points": [r["coords"] for r in all_competitors_raw[c_name]], "duration": 0.0}]
 
     return fleet_final_segmented_data
 
-# --- DESIGNER ROLE SYSTEM ---
+# --- DESIGNER CONTROLS ---
 st.sidebar.header("Mode Selection")
 app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare Tracks)", "Designer Mode (Create/Edit Course Layout)"])
 
@@ -180,8 +177,8 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-                elif g_type == "Point": markers.append([coords[1], coords[0]])
+                if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+                elif g_type == "Point": markers.append([coords, coords])
         
         if lines: folium.PolyLine(locations=lines, color="green", weight=6).add_to(m)
         if len(lines) >= 2: folium.PolyLine(locations=lines, color="red", weight=6).add_to(m)
@@ -207,8 +204,8 @@ else:
         parsed_durations = [20.0] * max_races_input
         st.sidebar.error("Invalid duration format. Defaulted to 20 mins per heat.")
 
-    st.subheader("🏃‍♂️ Multi-Race Fleet-Synchronized Dashboard")
-    st.markdown("Upload multiple competitor files simultaneously. The system detects the exact second the **first boat crosses the start line** to anchor the master clock symmetrically.")
+    st.subheader("Multi-Race Fleet-Synchronized Dashboard")
+    st.markdown("Upload multiple competitor files simultaneously. The system detects the exact second the **first boat triggers the start line** to anchor the clock.")
     
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
@@ -220,8 +217,8 @@ else:
         lines, markers = [], []
         for item in st.session_state["saved_raw_drawings"]:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-            elif g_type == "Point": markers.append([coords[1], coords[0]])
+            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+            elif g_type == "Point": markers.append([coords, coords])
         course_start = lines if len(lines) >= 1 else []
         course_finish = lines if len(lines) >= 2 else []
         course_marks = markers
@@ -243,7 +240,7 @@ else:
                         lat_d = lat * (180.0 / 2**31)
                         lon_d = lon * (180.0 / 2**31)
                         raw_records.append({
-                            "coords": (lat_d, lon_d),
+                            "coords": [lat_d, lon_d],
                             "timestamp": t_val
                         })
                         all_lats.append(lat_d)
@@ -254,15 +251,16 @@ else:
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
 
-    # Process all files simultaneously through the First-Crossing Sync Engine
+    # Process all files simultaneously through the updated Proximity Sync Engine
     all_parsed_competitor_data = {}
     if all_raw_competitors_dict and course_start:
         all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input)
 
+    # Clean camera target grouping
     if all_lats:
         map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
     elif course_start and len(course_start) > 0:
-        map_center = course_start[0]
+        map_center = course_start[0] if isinstance(course_start[0], list) else course_start
     else:
         map_center = [53.46, 9.98]
         
@@ -272,12 +270,12 @@ else:
     
     if course_start:
         folium.PolyLine(locations=course_start, color="green", weight=6).add_to(m)
-        folium.Marker(location=course_start[0], popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
+        folium.Marker(location=course_start[0] if isinstance(course_start[0], list) else course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
     if course_finish:
         folium.PolyLine(locations=course_finish, color="red", weight=6).add_to(m)
-        folium.Marker(location=course_finish[0], popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
+        folium.Marker(location=course_finish[0] if isinstance(course_finish[0], list) else course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
     for idx, mark in enumerate(course_marks):
-        folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
+        folium.Marker(location=mark[0] if isinstance(mark, list) and isinstance(mark[0], list) else mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
     # --- SIDEBAR INTERACTIVE FILTERS ---
     selected_heat_view = "Show All Context"
@@ -285,7 +283,8 @@ else:
     
     if all_parsed_competitor_data:
         st.sidebar.subheader("🔍 Active Heat Isolate")
-        heat_options = ["Show All Context"] + [f"Race {i+1}" for i in range(len(next(iter(all_parsed_competitor_data.values()))))]
+        max_len = max([len(h) for h in all_parsed_competitor_data.values()]) if all_parsed_competitor_data else 1
+        heat_options = ["Show All Context"] + [f"Race {i+1}" for i in range(max_len)]
         selected_heat_view = st.sidebar.selectbox("Select a race event to sync on screen:", heat_options)
         
         st.sidebar.subheader("👥 Competitors Filter")
