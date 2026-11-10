@@ -5,7 +5,7 @@ from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("👉 Hover along the blue racing track line to trace your turns, then click directly on the line to place your gates and cones.")
+st.markdown("👉 Use the visual timeline chart sliders below to isolate your exact racing window without any typing.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -48,60 +48,57 @@ col_map, col_data = st.columns([2.5, 1.5])
 current_markers = st.session_state.course_log[active_race]
 
 with col_map:
-    st.subheader(f"📈 Visual Performance Track - {active_race}")
+    st.subheader(f"📊 Visual Telemetry Velocity Graph - {active_race}")
     
     if not df_track.empty:
-        fig = px.line(df_track, x="Lon", y="Lat", title="Yacht Sailing Path (Click on line to mark)", hover_data=["Time", "Kph"])
-        fig.update_traces(line=dict(color="blue", width=3.5))
+        # Generate a clean, fast speed profile graph over time
+        fig = px.line(df_track, x="Time", y="Kph", title="Yacht Speed Timeline (Spot the zero points where you stopped)")
+        fig.update_traces(line=dict(color="blue", width=2.5))
+        st.plotly_chart(fig, use_container_width=True)
         
-        # FIXED: Forces crosshair selection mode active by default to disable the panning cursor block
-        fig.update_layout(
-            dragmode="select",
-            clickmode="event+select",
-            xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
-            yaxis=dict(title="Latitude", showgrid=True, zeroline=False)
-        )
+        st.divider()
+        st.subheader("⏱️ Race Window Selectors")
         
-        chart_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
+        # Pull all timestamps out of the file to populate the sliders seamlessly
+        time_options = df_track["Time"].unique().tolist()
         
-        if chart_event and "selection" in chart_event and "points" in chart_event["selection"]:
-            points_list = chart_event["selection"]["points"]
-            if len(points_list) > 0:
-                first_point = points_list[0]
-                pt_idx = first_point.get("point_index")
-                
-                if pt_idx is not None and pt_idx < len(df_track):
-                    c_lat = float(df_track["Lat"].iloc[pt_idx])
-                    c_lon = float(df_track["Lon"].iloc[pt_idx])
-                    num_markers = len(current_markers)
-                    
-                    if num_markers < 10:
-                        c_num = num_markers + 1
-                        if c_num == 1: lbl, clr = "Start Line A", "green"
-                        elif c_num == 2: lbl, clr = "Start Line B", "green"
-                        elif c_num == 3: lbl, clr = "Finish Line A", "red"
-                        elif c_num == 4: lbl, clr = "Finish Line B", "red"
-                        else: lbl, clr = f"Cone {c_num - 4}", "orange"
-                        
-                        desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
-                        
-                        st.session_state.course_log[active_race].append({
-                            "Seq ID": c_num, "Description": desc, "Label": lbl,
-                            "Latitude": c_lat, "Longitude": c_lon, "Color": clr
-                        })
-                        st.rerun()
+        # 1. Slider to anchor the 3-Minute Warning Signal
+        select_idx = st.slider("Drag slider to align with the complete stop signature on the graph:", 0, len(time_options)-1, 0)
+        warning_time = time_options[select_idx]
+        st.success(f"Selected Fleet 3-Minute Warning Time: **{warning_time}**")
+        
+        # Fetch the matching coordinate row for that exact timestamp automatically
+        matching_row = df_track[df_track["Time"] == warning_time].iloc[0]
+        in_lat = float(matching_row["Lat"])
+        in_lon = float(matching_row["Lon"])
     else:
-        st.info("Awaiting a .fit file upload to map the visual track graph line.")
+        st.info("Awaiting a .fit file upload to plot the visual timeline chart.")
 
 with col_data:
     st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click directly on a point on the blue path trace to lock **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click the line path to lock **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click the line path to lock **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click the line path to lock **Finish Line Marker B**.")
-    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to assign: {10 - num_markers}")
-    else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
+    
+    if not df_track.empty:
+        st.write(f"Current Coordinates: **{round(in_lat, 5)}, {round(in_lon, 5)}**")
+        
+        if num_markers < 4:
+            lbl = "Start Line A" if num_markers == 0 else ("Start Line B" if num_markers == 1 else ("Finish Line A" if num_markers == 2 else "Finish Line B"))
+            clr = "green" if num_markers < 2 else "red"
+            desc = "Gate"
+        else:
+            lbl = f"Cone {num_markers - 3}"
+            clr = "orange"
+            desc = "Cone Mark"
+
+        if num_markers < 10:
+            if st.button("➕ Log Mark at this Timeline Spot", use_container_width=True):
+                st.session_state.course_log[active_race].append({
+                    "Seq ID": num_markers + 1, "Description": desc, "Label": lbl,
+                    "Latitude": in_lat, "Longitude": in_lon, "Color": clr
+                })
+                st.rerun()
+        else:
+            st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
     if st.button("↩️ Undo Last Assignment", use_container_width=True):
         if st.session_state.course_log[active_race]:
