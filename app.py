@@ -210,7 +210,4 @@ if active_race in st.session_state.race_specs:
 "Avg Speed": "0.0 kph",
 "VMC": "0.0 kph"
 })
-if fleet_rows:
 st.table(pd.DataFrame(fleet_rows))
-else:
-st.info("No active sailors logged with configurations for this race sequence yet. Enter a name in the sidebar profile box to review configuration mapping behavior.")
