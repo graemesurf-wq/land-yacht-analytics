@@ -8,32 +8,21 @@ from fitparse import FitFile
 st.set_page_config(layout="wide")
 st.title("🏁 Shared Race Course & Multi-Track Viewer")
 
-# --- PERSISTENT STORAGE INITIALIZATION ---
+# --- STEP 1: INITIALIZE PERSISTENT STORAGE ---
 if "designer_points" not in st.session_state:
     st.session_state["designer_points"] = []
 if "racer_points" not in st.session_state:
     st.session_state["racer_points"] = []
+if "saved_raw_drawings" not in st.session_state:
+    st.session_state["saved_raw_drawings"] = None
 
-# Persistent variables for drawn items so they NEVER overwrite each other
-if "start_line" not in st.session_state:
-    st.session_state["start_line"] = [[53.4612, 9.9815], [53.4615, 9.9825]] # Initial default examples
-if "finish_line" not in st.session_state:
-    st.session_state["finish_line"] = [[53.4650, 9.9880], [53.4652, 9.9890]]
-if "marks" not in st.session_state:
-    st.session_state["marks"] = [[53.4625, 9.9840], [53.4635, 9.9860], [53.4645, 9.9850]]
-
-# --- STEP 1: DEFINE YOUR FIXED SAVED COURSE HERE ---
-# Once you copy the configuration block from the sidebar, paste it here to lock it for everyone.
+# --- STEP 2: DEFINE YOUR FIXED HARDCODED COURSE HERE ---
+# Paste your generated block here once you copy it from the sidebar!
 SAVED_COURSE = {
     "start_line": [],  
     "finish_line": [], 
     "marks": []   
 }
-
-# Use the saved code layout if available, otherwise read what's actively in live session state
-ACTIVE_START = SAVED_COURSE["start_line"] if SAVED_COURSE["start_line"] else st.session_state["start_line"]
-ACTIVE_FINISH = SAVED_COURSE["finish_line"] if SAVED_COURSE["finish_line"] else st.session_state["finish_line"]
-ACTIVE_MARKS = SAVED_COURSE["marks"] if SAVED_COURSE["marks"] else st.session_state["marks"]
 
 # --- SIDEBAR ROLE SELECTION ---
 st.sidebar.header("Mode Selection")
@@ -41,7 +30,13 @@ app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare T
 
 if app_mode == "Designer Mode (Create/Edit Course Layout)":
     st.subheader("🛠️ Course Designer Mode")
-    st.markdown("ℹ️ **Drawing Instructions:** \n1. Draw **Start Line** first using the Polyline tool. \n2. Draw **Finish Line** second. \n3. Use the Marker pin tool to drop **2 to 6 course turning marks**.")
+    st.markdown("""
+    ℹ️ **Drawing Instructions:**
+    1. Draw your **Start Line** first using the Polyline tool.
+    2. Draw your **Finish Line** second using the Polyline tool.
+    3. Drop your **2 to 6 turn marks** using the Marker pin tool.
+    4. **Crucial:** Once you are completely done drawing, click **'🔒 Lock Course Setup'** in the sidebar to process your lines and generate the code!
+    """)
     
     uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"], key="designer_uploader")
     
@@ -61,55 +56,72 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         df_designer = pd.DataFrame(active_points, columns=["lat", "lon"])
         center = [df_designer["lat"].mean(), df_designer["lon"].mean()]
     else:
-        center = ACTIVE_START[0] if ACTIVE_START else [53.46, 9.98]
+        center = [53.46, 9.98]
+    
+    # Checkbox to freeze drawing tool and calculate configurations
+    lock_course = st.sidebar.checkbox("🔒 Lock Course Setup & Generate Code", value=False)
     
     m = folium.Map(location=center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     
     if active_points:
         folium.PolyLine(locations=active_points, color="white", weight=3, opacity=0.4, tooltip="Reference Track").add_to(m)
         
-    # Render layers onto map canvas securely
-    if ACTIVE_START:
-        folium.PolyLine(locations=ACTIVE_START, color="green", weight=5, opacity=0.85, tooltip="Start").add_to(m)
-    if ACTIVE_FINISH:
-        folium.PolyLine(locations=ACTIVE_FINISH, color="red", weight=5, opacity=0.85, tooltip="Finish").add_to(m)
-    for idx, mk in enumerate(ACTIVE_MARKS):
-        folium.Marker(location=mk, icon=folium.Icon(color="orange", icon="info-sign")).add_to(m)
-
-    draw_tool = Draw(position='topleft', draw_options={'polyline': {'shapeOptions': {'color': '#00ffcc', 'weight': 5}}, 'marker': True, 'circle': False, 'rectangle': False, 'polygon': False, 'circlemarker': False})
-    draw_tool.add_to(m)
-    
-    map_output = st_folium(m, width=1100, height=600, key="designer_map_widget", returned_objects=["all_drawings"])
-    user_drawings = map_output.get("all_drawings") if map_output else None
-    
-    if user_drawings:
-        temp_lines = []
-        temp_markers = []
-        for item in user_drawings:
-            g_type = item['geometry']['type']
-            coords = item['geometry']['coordinates']
-            if g_type == "LineString":
-                temp_lines.append([[pt[1], pt[0]] for pt in coords]) # explicitly format to standard leaflet lat/lon
-            elif g_type == "Point":
-                temp_markers.append([coords[1], coords[0]])
+    if not lock_course:
+        # ONLY inject drawing controls when editing mode is completely unlocked
+        # This completely avoids Leaflet component rendering loops and duplication glitches
+        draw_tool = Draw(
+            position='topleft', 
+            draw_options={
+                'polyline': {'shapeOptions': {'color': '#00ffcc', 'weight': 5}}, 
+                'marker': True, 'circle': False, 'rectangle': False, 'polygon': False, 'circlemarker': False
+            }
+        )
+        draw_tool.add_to(m)
         
-        # Chronologically lock positions only as they are created to prevent shifting index bugs
-        if len(temp_lines) >= 1:
-            st.session_state["start_line"] = temp_lines[0]
-        if len(temp_lines) >= 2:
-            st.session_state["finish_line"] = temp_lines[1]
-        if len(temp_markers) > 0:
-            st.session_state["marks"] = temp_markers
+        map_output = st_folium(m, width=1100, height=600, key="designer_draw_map", returned_objects=["all_drawings"])
+        
+        if map_output and map_output.get("all_drawings"):
+            st.session_state["saved_raw_drawings"] = map_output["all_drawings"]
+            st.sidebar.info("✨ Drawings captured! Check the 'Lock Course' box above to view configuration outputs.")
             
-        # Re-verify clean variables for code generation printout
+    else:
+        # VISUAL VIEW MODE: The user has checked "Lock Course Setup"
+        # We process the captured geometry coordinates safely without drawing features active
+        user_drawings = st.session_state["saved_raw_drawings"]
+        
+        lines = []
+        markers = []
+        if user_drawings:
+            for item in user_drawings:
+                g_type = item['geometry']['type']
+                coords = item['geometry']['coordinates']
+                if g_type == "LineString":
+                    lines.append([[pt[1], pt[0]] for pt in coords]) # Flip map lon/lat to leaflet lat/lon
+                elif g_type == "Point":
+                    markers.append([coords[1], coords[0]])
+        
+        # Render the lines as processed finalized static layers
+        if len(lines) >= 1:
+            folium.PolyLine(locations=lines[0], color="green", weight=6, opacity=0.9).add_to(m)
+            folium.Marker(location=lines[0][0], popup="🟢 START", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
+        if len(lines) >= 2:
+            folium.PolyLine(locations=lines[1], color="red", weight=6, opacity=0.9).add_to(m)
+            folium.Marker(location=lines[1][0], popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
+        for idx, mk in enumerate(markers):
+            folium.Marker(location=mk, popup=f"Mark {idx+1}", icon=folium.Icon(color="orange", icon="info-sign")).add_to(m)
+            
+        # Keep map container rendered on screen
+        st_folium(m, width=1100, height=600, key="designer_view_map", returned_objects=[])
+        
+        # Generate the Code block print out safely in the sidebar layout
         st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
-        st.sidebar.markdown("Copy this block and replace lines 22-26 in your code:")
+        st.sidebar.markdown("Copy this block and replace lines 20-24 in your code:")
         
         config_text = "```python\n"
         config_text += "SAVED_COURSE = {\n"
-        config_text += f'    "start_line": {st.session_state["start_line"]},\n'
-        config_text += f'    "finish_line": {st.session_state["finish_line"]},\n'
-        config_text += f'    "marks": {st.session_state["marks"]}\n'
+        config_text += f'    "start_line": {lines[0] if len(lines) >= 1 else []},\n'
+        config_text += f'    "finish_line": {lines[1] if len(lines) >= 2 else []},\n'
+        config_text += f'    "marks": {markers}\n'
         config_text += "}\n"
         config_text += "```"
         st.sidebar.markdown(config_text)
@@ -133,11 +145,30 @@ else:
         
     active_racer_points = st.session_state["racer_points"]
     
+    # Read the active layout configurations safely
+    lines_source = SAVED_COURSE["start_line"] if SAVED_COURSE["start_line"] else (st.session_state["saved_raw_drawings"] if st.session_state["saved_raw_drawings"] else None)
+    
+    # Process geometry configurations for racers
+    racer_lines = []
+    racer_marks = []
+    if SAVED_COURSE["start_line"]:
+        racer_lines.append(SAVED_COURSE["start_line"])
+        racer_lines.append(SAVED_COURSE["finish_line"])
+        racer_marks = SAVED_COURSE["marks"]
+    elif st.session_state["saved_raw_drawings"]:
+        for item in st.session_state["saved_raw_drawings"]:
+            g_type = item['geometry']['type']
+            coords = item['geometry']['coordinates']
+            if g_type == "LineString":
+                racer_lines.append([[pt[1], pt[0]] for pt in coords])
+            elif g_type == "Point":
+                racer_marks.append([coords[1], coords[0]])
+
     if len(active_racer_points) > 0:
         df_racer = pd.DataFrame(active_racer_points, columns=["lat", "lon"])
         map_center = [df_racer["lat"].mean(), df_racer["lon"].mean()]
-    elif ACTIVE_START:
-        map_center = ACTIVE_START[0]
+    elif len(racer_lines) >= 1:
+        map_center = racer_lines[0][0]
     else:
         map_center = [53.46, 9.98]
         
@@ -145,17 +176,16 @@ else:
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
-    # Render Locked Course layout lines explicitly
-    if ACTIVE_START:
-        folium.PolyLine(locations=ACTIVE_START, color="green", weight=7, opacity=0.9, tooltip="Official Start Line").add_to(m)
-        folium.Marker(location=ACTIVE_START[0], popup="🟢 START LINE", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
-        
-    if ACTIVE_FINISH:
-        folium.PolyLine(locations=ACTIVE_FINISH, color="red", weight=7, opacity=0.9, tooltip="Official Finish Line").add_to(m)
-        folium.Marker(location=ACTIVE_FINISH[0], popup="🏁 FINISH LINE", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
-        
+    # Render final course layout marks securely
+    if len(racer_lines) >= 1:
+        folium.PolyLine(locations=racer_lines[0], color="green", weight=7, opacity=0.9, tooltip="Official Start Line").add_to(m)
+        folium.Marker(location=racer_lines[0][0], popup="🟢 START LINE", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
+    if len(racer_lines) >= 2:
+        folium.PolyLine(locations=racer_lines[1], color="red", weight=7, opacity=0.9, tooltip="Official Finish Line").add_to(m)
+        folium.Marker(location=racer_lines[1][0], popup="🏁 FINISH LINE", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
+    
     colors = ["orange", "purple", "blue", "cadetblue", "darkpurple", "pink"]
-    for idx, mark in enumerate(ACTIVE_MARKS):
+    for idx, mark in enumerate(racer_marks):
         folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors[idx % len(colors)], icon="info-sign")).add_to(m)
         
     if len(active_racer_points) > 0:
