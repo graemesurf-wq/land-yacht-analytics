@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import altair as alt
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("Use the selection crosshair cursor to click on the grid relative to your tracks to place marks.")
+st.markdown("👉 Click directly anywhere on the grid layout relative to the tracks to place your marks.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -58,43 +58,46 @@ current_markers = st.session_state.course_log[active_race]
 with col_map:
     st.subheader(f"📈 Clickable Canvas Grid - {active_race}")
     
-    fig = go.Figure()
+    # Set standard coordinate system boundaries if no track file is available
+    if df_track.empty:
+        df_track = pd.DataFrame([{"Lon": 0.0, "Lat": 0.0, "Kph": 0.0}])
+
+    # 1. Base Yacht Track Line Layer
+    track_chart = alt.Chart(df_track).mark_line(color="blue", strokeWidth=3).encode(
+        x=alt.X("Lon:Q", scale=alt.Scale(zero=False)),
+        y=alt.Y("Lat:Q", scale=alt.Scale(zero=False))
+    )
+
+    # 2. Click Interceptor Layer
+    click_selector = alt.selection_point(on="click", nearest=False, fields=["Lon", "Lat"], empty=False)
     
-    if not df_track.empty:
-        fig.add_trace(go.Scatter(
-            x=df_track["Lon"], y=df_track["Lat"], mode="lines",
-            line=dict(color="blue", width=3), name="Yacht Track"
-        ))
-    
+    interceptor = alt.Chart(df_track).mark_circle(opacity=0.0, size=200).encode(
+        x="Lon:Q", y="Lat:Q"
+    ).add_params(click_selector)
+
+    # 3. Mapped Course Marks Layer
     if current_markers:
         df_markers = pd.DataFrame(current_markers)
-        fig.add_trace(go.Scatter(
-            x=df_markers["Longitude"], y=df_markers["Latitude"], mode="markers+text",
-            marker=dict(size=14, color=df_markers["Color"]),
-            text=df_markers["Label"], textposition="top center", name="Course Marks"
-        ))
+        markers_chart = alt.Chart(df_markers).mark_circle(size=150).encode(
+            x="Longitude:Q", y="Latitude:Q", color=alt.Color("Color:N", scale=None)
+        )
+        final_chart = alt.layer(track_chart, interceptor, markers_chart).properties(width=700, height=500)
+    else:
+        final_chart = alt.layer(track_chart, interceptor).properties(width=700, height=500)
 
-    # FIXED: Turned off standard dragging zoom and activated box select crosshairs by default
-    fig.update_layout(
-        xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
-        yaxis=dict(title="Latitude", showgrid=True, zeroline=False),
-        margin=dict(r=10, t=10, l=10, b=10), height=500,
-        dragmode="select",
-        clickmode="event+select"
-    )
-    
-    # Process choice outputs from selection canvas interaction
-    map_click = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
+    # Render layout and track output actions safely
+    chart_selection = st.altair_chart(final_chart, on_select="rerun")
 
-    if map_click and map_click.get("selection") and map_click["selection"].get("box"):
-        box_data = map_click["selection"]["box"]
-        # Extract the center point array from your click crosshair rectangle box boundary selection window
-        if box_data and len(box_data) > 0:
-            c_lon = float(sum(box_data["x"]) / 2)
-            c_lat = float(sum(box_data["y"]) / 2)
+    if chart_selection and chart_selection.get("selection") and chart_selection["selection"]:
+        # Extract selected values directly from the clicked coordinate parameters
+        sel_key = list(chart_selection["selection"].keys())[0]
+        sel_points = chart_selection["selection"][sel_key]
+        if isinstance(sel_points, list) and len(sel_points) > 0:
+            c_lon = float(sel_points[0].get("Lon", 0.0))
+            c_lat = float(sel_points[0].get("Lat", 0.0))
             
             num_markers = len(current_markers)
-            if num_markers < 10:
+            if num_markers < 10 and (c_lon != 0.0 or c_lat != 0.0):
                 c_num = num_markers + 1
                 if c_num == 1: lbl, clr = "Start Line A", "green"
                 elif c_num == 2: lbl, clr = "Start Line B", "green"
@@ -124,10 +127,10 @@ with col_map:
 with col_data:
     st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click and draw a tiny selection square anywhere on the grid relative to the turn to drop **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click/select to drop **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click/select to drop **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click/select to drop **Finish Line Marker B**.")
+    if num_markers == 0: st.info("👉 Click directly anywhere near the turning point to drop **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Click to drop **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Click to drop **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Click to drop **Finish Line Marker B**.")
     elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to drop: {10 - num_markers} (Min 2 cones).")
     else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
