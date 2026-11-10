@@ -43,7 +43,6 @@ total_races = st.sidebar.number_input("Total Races for the Day", min_value=1, ma
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
 active_race = st.sidebar.selectbox("Active Race to Configure", options=race_options)
 
-# FIXED: Hardcoded text tuples to bypass bracket stripping bugs entirely
 duration_choices = (10, 15, 20, 25, 30)
 allocated_duration = st.sidebar.selectbox("Allocated Race Duration", options=duration_choices, index=2, format_func=lambda x: f"{x} Minutes")
 
@@ -92,7 +91,6 @@ if sailor_name:
     tp_options = (1.0, 1.2, 1.4, 1.6, 1.8, 2.0)
     specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", options=tp_options, index=tp_options.index(specs["tire_pressure"]))
     
-    # FIXED: Hardcoded text tuples to bypass bracket stripping bugs entirely
     bh_options = (15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48)
     specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm gap)", options=bh_options, index=bh_options.index(specs["boom_height"]))
     
@@ -105,8 +103,8 @@ col_map, col_data = st.columns([2.5, 1.5])
 active_markers = [m for m in st.session_state.course_log if m.get("race") == active_race]
 
 with col_map:
-    st.subheader(f"🗺️ Performance Satellite Map - {active_race}")
-    st.caption("💡 Zoom cleanly with your scroll wheel. Click anywhere on the map image grid to position your racing cones.")
+    st.subheader(f"🗺️ Performance Map - {active_race}")
+    st.caption("💡 Zoom cleanly with your scroll wheel. Click anywhere on the map grid to position your racing cones.")
     
     center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
@@ -118,7 +116,7 @@ with col_map:
     if not df_track.empty:
         fig.add_trace(go.Scattermapbox(
             lat=df_track["Latitude"], lon=df_track["Longitude"],
-            mode="lines", line=dict(width=3.5, color="yellow"), name="Sailing Path"
+            mode="lines", line=dict(width=3.5, color="blue"), name="Sailing Path"
         ))
 
     if active_markers:
@@ -134,13 +132,10 @@ with col_map:
         if len(active_markers) >= 4:
             fig.add_trace(go.Scattermapbox(lat=[active_markers[2]["Latitude"], active_markers[3]["Latitude"]], lon=[active_markers[2]["Longitude"], active_markers[3]["Longitude"]], mode="lines", line=dict(width=2, color="red", dash="dash"), showlegend=False))
 
+    # FIXED HERE: Removed the custom layers list that was failing verification and set style directly to open-street-map
     fig.update_layout(
         mapbox=dict(
-            style="white-bg",
-            layers=[{
-                "below": "traces", "sourcetype": "raster",
-                "source": ["https://arcgisonline.com{z}/{y}/{x}"]
-            }],
+            style="open-street-map",
             center=dict(lat=center_lat, lon=center_lon), zoom=14
         ),
         margin=dict(r=0, t=0, l=0, b=0), height=500
@@ -184,7 +179,7 @@ with col_map:
 with col_data:
     st.subheader("📋 Active Course Definition Log")
     num_markers = len(active_markers)
-    if num_markers == 0: st.info("👉 Click on the satellite image grid to place **Start Line Marker A**.")
+    if num_markers == 0: st.info("👉 Click on the map grid to place **Start Line Marker A**.")
     elif num_markers == 1: st.info("👉 Click to place **Start Line Marker B**.")
     elif num_markers == 2: st.info("👉 Click to place **Finish Line Marker A**.")
     elif num_markers == 3: st.info("👉 Click to place **Finish Line Marker B**.")
@@ -204,18 +199,18 @@ fleet_rows = []
 if active_race in st.session_state.race_specs:
     for name, tuning in st.session_state.race_specs[active_race].items():
         file_status = "✅ File Loaded" if uploaded_file and not df_track.empty else ("❌ Empty File Track" if uploaded_file else "⏳ Awaiting File")
-fleet_rows.append({
-"Yacht Identifier": name,
-"Sail Size": tuning["sail_size"],
-"Weight (kg)": tuning["race_weight"],
-"Boom Gap (cm)": tuning["boom_height"],
-"Tires (Bar)": tuning["tire_pressure"],
+        fleet_rows.append({
+            "Yacht Identifier": name,
+            "Sail Size": tuning["sail_size"],
+            "Weight (kg)": tuning["race_weight"],
+            "Boom Gap (cm)": tuning["boom_height"],
+            "Tires (Bar)": tuning["tire_pressure"],
 "Data Status": file_status,
 "Distance (km)": "0.00",
 "Avg Speed": "0.0 kph",
 "VMC": "0.0 kph"
 })
 if fleet_rows:
-    st.table(pd.DataFrame(fleet_rows))
+st.table(pd.DataFrame(fleet_rows))
 else:
-    st.info("No active sailors logged with configurations for this race sequence yet. Enter a name in the sidebar profile box to review configuration mapping behavior.")
+st.info("No active sailors logged with configurations for this race sequence yet. Enter a name in the sidebar profile box to review configuration mapping behavior.")
