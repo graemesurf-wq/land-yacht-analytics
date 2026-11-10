@@ -64,22 +64,29 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
             elif g_type == "Point":
                 markers.append([coords[1], coords[0]])
                 
-        # Generate configuration block text for the user to copy paste
+        # Generate configuration block text safely using clean string encapsulation
         st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
         st.sidebar.markdown("Copy this block and replace lines 13-23 in your `app.py` file code:")
         
-        config_text = f"""```python
-SAVED_COURSE = {{
-    "start_line": {lines[:1][0] if len(lines) >= 1 else []},
-    "finish_line": {lines[1:2][0] if len(lines) >= 2 else []},
-    "marks": {markers}
-}}
-```"""
+        start_val = lines[0] if len(lines) >= 1 else []
+        finish_val = lines[1] if len(lines) >= 2 else []
+        
+        # We escape the markdown backticks using double double-quotes to prevent code parsing conflicts
+        config_text = "```python\n"
+        config_text += "SAVED_COURSE = {\n"
+        config_text += f'    "start_line": {start_val},\n'
+        config_text += f'    "finish_line": {finish_val},\n'
+        config_text += f'    "marks": {markers}\n'
+        config_text += "}\n"
+        config_text += "```"
+        
         st.sidebar.markdown(config_text)
         
         # UI Validation warnings
-        if len(lines) < 2: st.warning(f"Please draw both a Start Line and Finish Line. Currently have: {len(lines)} lines.")
-        if not (2 <= len(markers) <= 6): st.warning(f"Please place between 2 and 6 turn marks. Currently have: {len(markers)} marks.")
+        if len(lines) < 2: 
+            st.warning(f"Please draw both a Start Line and Finish Line. Currently have: {len(lines)} lines.")
+        if not (2 <= len(markers) <= 6): 
+            st.warning(f"Please place between 2 and 6 turn marks. Currently have: {len(markers)} marks.")
 
 else:
     # --- RACER MODE ---
@@ -127,4 +134,3 @@ else:
             st.error("No valid GPS data points found in your uploaded file.")
             
     st_folium(m, width=1100, height=650, returned_objects=[])
-```
