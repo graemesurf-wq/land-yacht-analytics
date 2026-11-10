@@ -128,12 +128,3 @@ else:
             
     st_folium(m, width=1100, height=650, returned_objects=[])
 ```
-
-### How This New Workflow Works:
-1. **Design the Course First:** Fire up the app locally or on your temporary Streamlit cloud window. Toggle to **Designer Mode** on the sidebar. Upload your own track file as a mapping template, and draw your exact lines and course marker pins. 
-2. **Lock It Into Code:** As you draw, a code snippet dynamically generates in the sidebar under `SAVED_COURSE`. Copy that text block, go over to GitHub (or your local IDE), replace lines 13 to 23 of your code with your newly copied block, and commit changes.
-3. **Open for Everyone:** When your friends visit the deployed URL, they will arrive directly in **Racer Mode**. They cannot accidentally edit or delete your marks. The app cleanly loads your exact lines across the satellite screen, ready for them to upload their own `.fit` activity and analyze how closely they cornered your markers.
-
-<FollowUp>
-Would you like to build an extended feature in Racer Mode that **checks if their track actually crossed** your drawn Start and Finish lines, or do you want to add a text field so racers can type in their **Name or Bib Number** to label their track run?
-</FollowUp>
