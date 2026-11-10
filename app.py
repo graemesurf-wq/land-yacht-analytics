@@ -5,7 +5,7 @@ from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("Click anywhere on the coordinate grid relative to the tracks to place your gates and cones.")
+st.markdown("Use the selection crosshair cursor to click on the grid relative to your tracks to place marks.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -60,14 +60,12 @@ with col_map:
     
     fig = go.Figure()
     
-    # Layer 1: Plot the raw track path line
     if not df_track.empty:
         fig.add_trace(go.Scatter(
             x=df_track["Lon"], y=df_track["Lat"], mode="lines",
             line=dict(color="blue", width=3), name="Yacht Track"
         ))
     
-    # Layer 2: Plot the clicked course marks on top
     if current_markers:
         df_markers = pd.DataFrame(current_markers)
         fig.add_trace(go.Scatter(
@@ -76,39 +74,41 @@ with col_map:
             text=df_markers["Label"], textposition="top center", name="Course Marks"
         ))
 
-    # Clean layout with no external background maps to crash
+    # FIXED: Turned off standard dragging zoom and activated box select crosshairs by default
     fig.update_layout(
         xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
         yaxis=dict(title="Latitude", showgrid=True, zeroline=False),
-        margin=dict(r=10, t=10, l=10, b=10), height=500
+        margin=dict(r=10, t=10, l=10, b=10), height=500,
+        dragmode="select",
+        clickmode="event+select"
     )
     
-    # Standard, built-in layout listener that captures any mouse coordinate selection securely
+    # Process choice outputs from selection canvas interaction
     map_click = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
 
-    if map_widget := map_click:
-        if map_widget.get("selection") and map_widget["selection"].get("box"):
-            if map_widget["selection"]["box"]:
-                # Pull the raw coordinate values right out of the selection window box boundary click
-                c_lon = map_widget["selection"]["box"][0]["x"][0]
-                c_lat = map_widget["selection"]["box"][0]["y"][0]
+    if map_click and map_click.get("selection") and map_click["selection"].get("box"):
+        box_data = map_click["selection"]["box"]
+        # Extract the center point array from your click crosshair rectangle box boundary selection window
+        if box_data and len(box_data) > 0:
+            c_lon = float(sum(box_data["x"]) / 2)
+            c_lat = float(sum(box_data["y"]) / 2)
+            
+            num_markers = len(current_markers)
+            if num_markers < 10:
+                c_num = num_markers + 1
+                if c_num == 1: lbl, clr = "Start Line A", "green"
+                elif c_num == 2: lbl, clr = "Start Line B", "green"
+                elif c_num == 3: lbl, clr = "Finish Line A", "red"
+                elif c_num == 4: lbl, clr = "Finish Line B", "red"
+                else: lbl, clr = f"Cone {c_num - 4}", "orange"
                 
-                num_markers = len(current_markers)
-                if num_markers < 10:
-                    c_num = num_markers + 1
-                    if c_num == 1: lbl, clr = "Start Line A", "green"
-                    elif c_num == 2: lbl, clr = "Start Line B", "green"
-                    elif c_num == 3: lbl, clr = "Finish Line A", "red"
-                    elif c_num == 4: lbl, clr = "Finish Line B", "red"
-                    else: lbl, clr = f"Cone {c_num - 4}", "orange"
-                    
-                    desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
-                    
-                    st.session_state.course_log[active_race].append({
-                        "Seq ID": c_num, "Description": desc, "Label": lbl,
-                        "Latitude": c_lat, "Longitude": c_lon, "Color": clr
-                    })
-                    st.rerun()
+                desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
+                
+                st.session_state.course_log[active_race].append({
+                    "Seq ID": c_num, "Description": desc, "Label": lbl,
+                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                })
+                st.rerun()
 
     c1, c2 = st.columns(2)
     with c1:
@@ -124,10 +124,10 @@ with col_map:
 with col_data:
     st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click anywhere on the grid relative to the turn to drop **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click to drop **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click to drop **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click to drop **Finish Line Marker B**.")
+    if num_markers == 0: st.info("👉 Click and draw a tiny selection square anywhere on the grid relative to the turn to drop **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Click/select to drop **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Click/select to drop **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Click/select to drop **Finish Line Marker B**.")
     elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to drop: {10 - num_markers} (Min 2 cones).")
     else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
