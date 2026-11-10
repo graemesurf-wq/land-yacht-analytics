@@ -10,7 +10,9 @@ from datetime import datetime, timedelta
 st.set_page_config(layout="wide", page_title="Land Yacht Sync Engine")
 st.title("🏁 Fleet-Synchronized Land Yacht Analyst")
 
-# Initialize background memory states safely
+# --- INITIALIZE ALL MEMORY STATES FIRST TO PREVENT KEYERRORS ---
+if "designer_points" not in st.session_state:
+    st.session_state["designer_points"] = []
 if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
@@ -27,7 +29,7 @@ def clean_coordinates(coord_input, default_coords=None):
         return fallback
     try:
         while isinstance(coord_input, list) and len(coord_input) == 1:
-            coord_input = coord_input[0]
+            coord_input = coord_input
         if isinstance(coord_input, list) and len(coord_input) >= 2:
             return [float(coord_input[0]), float(coord_input[1])]
         return fallback
@@ -44,17 +46,12 @@ def haversine_dist(p1, p2):
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 def advanced_first_boat_sync(all_competitors_raw, start_pin, finish_pin, course_marks, duration_list, max_races, fallback_anchor=None):
-    """
-    Synchronizes fleet race runs based on speed ignition triggers, allowing for late starters
-    and arming finish gates dynamically once the last course mark has been verified as rounded.
-    """
     st_pin = clean_coordinates(start_pin, default_coords=fallback_anchor)
     fn_pin = clean_coordinates(finish_pin, default_coords=fallback_anchor) if finish_pin else st_pin
     c_marks = [clean_coordinates(m, default_coords=fallback_anchor) for m in course_marks] if course_marks else []
 
     last_mark_pt = c_marks[-1] if len(c_marks) > 0 else None
 
-    # Step 1: Detect all fleet ignition triggers where speed climbs past 0.5 km/h
     movement_triggers = []
     for records in all_competitors_raw.values():
         for idx in range(1, len(records)):
@@ -80,12 +77,22 @@ def advanced_first_boat_sync(all_competitors_raw, start_pin, finish_pin, course_
             if (t - current_cluster[-1]).total_seconds() < 600:
                 current_cluster.append(t)
             else:
-                race_start_anchors.append(current_cluster[0])
+                potential_t0 = current_cluster[0]
+                gate_validated = False
+                
+                for records in all_competitors_raw.values():
+                    for r in records:
+                        if potential_t0 <= r["timestamp"] <= (potential_t0 + timedelta(minutes=2.5)):
+                            if haversine_dist(r["coords"], st_pin) <= 100.0:
+                                gate_validated = True
+                                break
+                    if gate_validated: break
+                
+                race_start_anchors.append(potential_t0)
                 current_cluster = [t]
         if current_cluster and len(race_start_anchors) < max_races:
             race_start_anchors.append(current_cluster[0])
 
-    # Step 2: Symmetrically slice tracking lines across fleet
     fleet_final_data = {}
     validated_race_count = 0
     for c_name in all_competitors_raw.keys():
@@ -103,21 +110,16 @@ def advanced_first_boat_sync(all_competitors_raw, start_pin, finish_pin, course_
             actual_finish_time = None
             
             for r in records:
-                # Capture everything inside the baseline chronological sequence window
                 if master_start_t <= r["timestamp"] <= timer_expiry_t:
                     race_points.append(r["coords"])
-                    # Check if they pass near the final mark early/before expiry time
                     if last_mark_pt and haversine_dist(r["coords"], last_mark_pt) <= 60.0:
                         has_rounded_last_mark = True
                         
-                # After timer runs out, hold open until they cross the finish pin
                 elif r["timestamp"] > timer_expiry_t and not found_finish:
                     race_points.append(r["coords"])
-                    
                     if last_mark_pt and haversine_dist(r["coords"], last_mark_pt) <= 60.0:
                         has_rounded_last_mark = True
                         
-                    # Trigger condition: Time limit is expired AND final mark rounding is satisfied
                     if has_rounded_last_mark or not last_mark_pt:
                         if haversine_dist(r["coords"], fn_pin) <= 50.0:
                             actual_finish_time = r["timestamp"]
@@ -143,7 +145,7 @@ app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare T
 
 if app_mode == "Designer Mode (Create/Edit Course Layout)":
     st.subheader("🛠️ Course Designer Mode")
-    st.markdown("ℹ️ **Drawing Instructions:** Drop **Pins** (Markers) onto the map layout: \n1. First Pin = **Start Gate center (100m radius check)** \n2. Second Pin = **Finish Gate center (50m radius check)** \n3. Subsequent Pins = **Marks 1, 2, 3, etc. (Chronological Order)**")
+    st.markdown("ℹ️ **Drawing Instructions:** Drop **Pins** (Markers) onto the map layout: \n1. First Pin = **Start Gate center** \n2. Second Pin = **Finish Gate center** \n3. Subsequent Pins = **Marks 1, 2, 3, etc.**")
     
     uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"], key="designer_uploader")
     if uploaded_file:
@@ -199,7 +201,7 @@ else:
     except:
         parsed_durations = [20.0] * max_races_input
 
-    st.subheader("Multi-Race Fleet-Synchronized Dashboard")
+    st.subheader("🏃‍♂️ Multi-Race Fleet-Synchronized Dashboard")
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
     course_start, course_finish, course_marks = [], [], []
@@ -240,7 +242,6 @@ else:
             except Exception as e:
                 st.error(f"Error parsing file: {e}")
 
-    # Process all files concurrently through the advanced adaptive movement engine
     all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input, fallback_anchor=first_file_anchor)
 
     map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.407453, 5.274961]
