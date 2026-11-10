@@ -1,4 +1,4 @@
-dimport json
+import json
 import os
 
 import folium
@@ -47,7 +47,7 @@ def load_course():
 
 
 def drawings_to_course(drawings):
-    """Pins in order: 1-2 = start line ends, 3 = finish, 4+ = marks.
+    """Pins in order: 1-2 = start line ends, 3 = finish, 4+ = marks (lap order).
     Leaflet gives [lon, lat]; we store [lat, lon]."""
     pts = [[d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0]]
            for d in drawings if d["geometry"]["type"] == "Point"]
@@ -70,11 +70,13 @@ def fmt(secs):
 
 
 # ------------------------------------------------------- race detection
-def detect_races(df, course, r_start, r_mark, r_fin, max_min):
-    """Per boat: find each run  start area -> marks in order -> finish, plus the
-    time the boat crossed the start line towards the first mark."""
+def detect(df, course, r_start, r_mark, r_fin, give_up_min):
+    """Per boat: every valid start (leaving the start area towards the first mark and
+    reaching it), the time it crossed the start line, and the lap completions after it."""
     lat, lon = df["lat"].to_numpy(), df["lon"].to_numpy()
     t = (df["t"] - df["t"].iloc[0]).dt.total_seconds().to_numpy()
+    base = df["t"].iloc[0]
+    n = len(t)
 
     d_start = hav(lat, lon, *course["start"])
     d_fin = hav(lat, lon, *course["finish"])
@@ -84,7 +86,7 @@ def detect_races(df, course, r_start, r_mark, r_fin, max_min):
     first_pt = course["marks"][0] if n_marks else course["finish"]
     line_to_first = hav(np.array([course["start"][0]]), np.array([course["start"][1]]), *first_pt)[0]
 
-    # --- forward crossings of the start line (back side -> first-mark side)
+    # forward crossings of the start line (back side -> first-mark side)
     cross_t = np.array([])
     if course.get("start_a") and course.get("start_b"):
         lat0, lon0 = course["start"]
@@ -109,65 +111,96 @@ def detect_races(df, course, r_start, r_mark, r_fin, max_min):
             ok = (u >= 0) & (u <= 1)
             cross_t = t[idx][ok] + frac[ok] * (t[idx + 1][ok] - t[idx][ok])
 
-    # --- state machine
-    attempts = []
-    active, last_in_start, start_i, next_mark = False, None, 0, 0
-    for i in range(len(t)):
-        if not active:
-            if d_start[i] <= r_start:
-                last_in_start = i  # sailing around the start area
-            elif last_in_start is not None and t[i] - t[last_in_start] <= 30:
-                # leaving the area: counts only on the first-mark side (beside the line is fine)
-                if d_first[i] <= line_to_first + 0.25 * r_start:
-                    active, start_i, next_mark = True, last_in_start, 0
-                last_in_start = None
-            continue
-        if next_mark == 0 and d_start[i] <= r_start:
-            active, last_in_start = False, i  # back at the line: restart
-            continue
-        if next_mark < n_marks and d_marks[next_mark][i] <= r_mark:
-            next_mark += 1
-        if next_mark == n_marks and d_fin[i] <= r_fin:
-            attempts.append((start_i, i, True))
-            active = False
-        elif t[i] - t[start_i] > max_min * 60:
-            if next_mark > 0:
-                attempts.append((start_i, i, False))
-            active = False
+    def stamp(sec):
+        return base + pd.to_timedelta(sec, unit="s")
 
-    base = df["t"].iloc[0]
-    out = []
-    for s_i, e_i, fin in attempts:
+    cands, last_in_start = [], None
+    for i in range(n):
+        if d_start[i] <= r_start:
+            last_in_start = i  # sailing around the start area
+            continue
+        if last_in_start is None or t[i] - t[last_in_start] > 30:
+            continue
+        s_i, last_in_start = last_in_start, None
+        if d_first[i] > line_to_first + 0.25 * r_start:
+            continue  # left from behind the line: not a start
+        j, reached = i, False
+        while j < n and t[j] - t[i] <= 600 and d_start[j] > r_start:
+            if d_first[j] <= r_mark:
+                reached = True
+                break
+            j += 1
+        if not reached:
+            continue  # went back to the line (early start / still manoeuvring)
+
+        # laps completed after this start: all marks in order, then the finish
+        laps, nm, cool = [], 0, False
+        for k in range(i, n):
+            if t[k] - t[s_i] > give_up_min * 60:
+                break
+            if cool:
+                if d_fin[k] > r_fin:
+                    cool = False
+                continue
+            if nm < n_marks and d_marks[nm][k] <= r_mark:
+                nm += 1
+            if nm == n_marks and d_fin[k] <= r_fin:
+                laps.append(stamp(t[k]))
+                nm, cool = 0, True
         cand = cross_t[(cross_t >= t[s_i] - 300) & (cross_t <= t[s_i] + 60)]
-        out.append({
-            "start_time": base + pd.to_timedelta(t[s_i], unit="s"),
-            "cross_time": base + pd.to_timedelta(cand[-1], unit="s") if len(cand) else None,
-            "end_time": base + pd.to_timedelta(t[e_i], unit="s"),
-            "finished": fin,
-            "points": df.iloc[s_i:e_i + 1][["lat", "lon"]].to_numpy()[::3].tolist(),
-        })
-    return out
+        cands.append({"start_time": stamp(t[s_i]),
+                      "cross_time": stamp(cand[-1]) if len(cand) else None,
+                      "laps": laps})
+    return cands
 
 
 @st.cache_data(show_spinner="Analysing track…")
-def analyse(data, course_json, r_start, r_mark, r_fin, max_min):
+def analyse(data, course_json, r_start, r_mark, r_fin, give_up_min):
     df = load_fit(data)
     if len(df) < 10:
-        return None, None
-    return (detect_races(df, json.loads(course_json), r_start, r_mark, r_fin, max_min),
-            [float(df["lat"].mean()), float(df["lon"].mean())])
+        return None
+    cands = detect(df, json.loads(course_json), r_start, r_mark, r_fin, give_up_min)
+    sub = df.iloc[::2]
+    base = df["t"].iloc[0]
+    return {"cands": cands, "base": base,
+            "t": (sub["t"] - base).dt.total_seconds().to_numpy(),
+            "lat": sub["lat"].to_numpy(), "lon": sub["lon"].to_numpy()}
 
 
-def number_races(per_boat, gap_min):
-    flat = [(b, a) for b, atts in per_boat.items() for a in atts]
-    flat.sort(key=lambda x: x[1]["start_time"])
-    race_no, last_t = 0, None
-    for _, a in flat:
-        if last_t is None or (a["start_time"] - last_t).total_seconds() > gap_min * 60:
-            race_no += 1
-        a["race"] = race_no
-        last_t = a["start_time"]
-    return flat
+def build_races(per_boat, limits, window_min):
+    """Fleet races, in time order. A race starts when the first boat crosses the line;
+    after the race time limit each boat finishes at its next lap completion."""
+    races, lower = [], None
+    for k in range(30):
+        firsts = {}
+        for b, info in per_boat.items():
+            for c in info["cands"]:
+                ts = c["cross_time"] if c["cross_time"] is not None else c["start_time"]
+                if lower is None or ts >= lower:
+                    firsts.setdefault(b, []).append((ts, c))
+        if not firsts:
+            break
+        picked = {b: min(v, key=lambda x: x[0]) for b, v in firsts.items()}
+        F = min(ts for ts, _ in picked.values())
+        window_end = F + pd.Timedelta(minutes=window_min)
+        limit = limits[min(k, len(limits) - 1)]
+        limit_t = F + pd.Timedelta(minutes=limit)
+        boats = {}
+        for b, (ts, c) in picked.items():
+            if ts > window_end:
+                continue
+            end = next((lap for lap in c["laps"] if lap >= limit_t), None)
+            boats[b] = {"own_start": ts, "end": end, "finished": end is not None}
+        races.append({"n": k + 1, "start": F, "limit": limit, "limit_t": limit_t, "boats": boats})
+        lower = limit_t
+    return races
+
+
+def track_slice(info, s, e):
+    base = info["base"]
+    s_sec, e_sec = (s - base).total_seconds(), (e - base).total_seconds()
+    i0, i1 = np.searchsorted(info["t"], s_sec), np.searchsorted(info["t"], e_sec, side="right")
+    return np.column_stack([info["lat"][i0:i1], info["lon"][i0:i1]]).tolist()
 
 
 # ----------------------------------------------------------------- sidebar
@@ -177,7 +210,7 @@ mode = st.sidebar.radio("Mode", ["Racer (analyse tracks)", "Designer (set up cou
 if mode.startswith("Designer"):
     st.subheader("🛠️ Course Designer")
     st.markdown("Drop pins in this order: **1–2 = ends of the start line, 3 = finish, 4+ = marks** "
-                "(in rounding order). Then save or download the course.")
+                "(in the order they are rounded each lap). Then save or download the course.")
 
     ref = st.file_uploader("Optional: reference .fit track", type=["fit"])
     center, track = DEFAULT_CENTER, None
@@ -209,11 +242,20 @@ if mode.startswith("Designer"):
 # ------------------------------------------------------------------- racer
 else:
     st.sidebar.header("Detection settings")
+    limits_raw = st.sidebar.text_input("Race time limits in minutes, one per race (comma separated)",
+                                       "15, 20, 15, 15, 10",
+                                       help="When the limit runs out, each boat finishes the lap it is on. "
+                                            "The last value is reused if there are more races.")
+    try:
+        limits = [float(x) for x in limits_raw.split(",") if x.strip()] or [20.0]
+    except ValueError:
+        limits = [20.0]
+    window_min = st.sidebar.number_input("Boats starting within N minutes of the first = same race", 1, 30, 4)
     r_start = st.sidebar.slider("Start area radius (m)", 20, 300, 100)
     r_mark = st.sidebar.slider("Mark rounding radius (m)", 10, 150, 60)
     r_fin = st.sidebar.slider("Finish zone radius (m)", 10, 150, 50)
-    max_min = st.sidebar.number_input("Max minutes on course (time cap)", 5, 90, 30)
-    gap_min = st.sidebar.number_input("Starts within N minutes = same race", 1, 30, 4)
+    give_up = st.sidebar.number_input("Look for laps up to (minutes after start)", 20, 180, 60,
+                                      help="Must be longer than your longest race plus one lap.")
 
     course = load_course()
     course_up = st.sidebar.file_uploader("Or load a course.json", type=["json"])
@@ -228,60 +270,53 @@ else:
         st.stop()
 
     course_json = json.dumps(course, sort_keys=True)
-    per_boat, centers = {}, []
+    per_boat = {}
     for f in files:
         try:
-            atts, c = analyse(f.getvalue(), course_json, r_start, r_mark, r_fin, max_min)
-            if atts is None:
+            info = analyse(f.getvalue(), course_json, r_start, r_mark, r_fin, give_up)
+            if info is None:
                 st.warning(f"{f.name}: no usable GPS data")
-                continue
-            per_boat[f.name] = atts
-            centers.append(c)
+            else:
+                per_boat[f.name] = info
         except Exception as e:
             st.error(f"{f.name}: {e}")
 
-    flat = number_races(per_boat, gap_min)
-    if not flat:
-        st.warning("No races found. Try bigger radii, a longer time cap, or check the pins in Designer mode.")
+    races = build_races(per_boat, limits, window_min)
+    if not races:
+        st.warning("No races found. Try bigger radii, check the pin order in Designer mode, "
+                   "or check that the marks are listed in the order they are rounded.")
         st.stop()
-    n_races = max(a["race"] for _, a in flat)
-    race_cols = [f"Race {i}" for i in range(1, n_races + 1)]
+    race_cols = [f"Race {r['n']}" for r in races]
 
-    # The first boat across the line starts the clock for everyone.
-    fleet_start = {}
-    for r in range(1, n_races + 1):
-        in_race = [a for _, a in flat if a["race"] == r]
-        crossed = [a["cross_time"] for a in in_race if a["cross_time"] is not None]
-        fleet_start[r] = min(crossed) if crossed else min(a["start_time"] for a in in_race)
-    for _, a in flat:
-        a["secs"] = max(0.0, (a["end_time"] - fleet_start[a["race"]]).total_seconds())
-        own = a["cross_time"] if a["cross_time"] is not None else a["start_time"]
-        a["delay"] = max(0.0, (own - fleet_start[a["race"]]).total_seconds())
-
-    rows, totals = {}, {}
-    for b, a in flat:
-        rows.setdefault(b, {})[f"Race {a['race']}"] = fmt(a["secs"]) + ("" if a["finished"] else " (DNF)")
-        if a["finished"]:
-            totals[b] = totals.get(b, 0) + a["secs"]
+    rows, totals, delays = {}, {}, {}
+    for r in races:
+        for b, v in r["boats"].items():
+            col = f"Race {r['n']}"
+            if v["finished"]:
+                secs = (v["end"] - r["start"]).total_seconds()
+                rows.setdefault(b, {})[col] = fmt(secs)
+                totals[b] = totals.get(b, 0) + secs
+            else:
+                rows.setdefault(b, {})[col] = "DNF"
+            delays.setdefault(b, {})[col] = fmt(max(0.0, (v["own_start"] - r["start"]).total_seconds()))
     table = pd.DataFrame(rows).T.reindex(columns=race_cols).fillna("–")
     table["Total (finished)"] = [fmt(totals[b]) if b in totals else "–" for b in table.index]
 
     st.subheader("⏱️ Time on course (from the first boat across the start line)")
     st.dataframe(table, use_container_width=True)
-    st.caption("Race starts: " + ", ".join(f"Race {r}: {s:%H:%M:%S}" for r, s in fleet_start.items()))
+    st.caption("Race start (first boat across the line) and time limit: " + " · ".join(
+        f"Race {r['n']}: {r['start']:%H:%M:%S}, {r['limit']:g} min" for r in races))
 
     with st.expander("How far behind the first starter each boat started"):
-        d = {}
-        for b, a in flat:
-            d.setdefault(b, {})[f"Race {a['race']}"] = fmt(a["delay"])
-        st.dataframe(pd.DataFrame(d).T.reindex(columns=race_cols).fillna("–"), use_container_width=True)
+        st.dataframe(pd.DataFrame(delays).T.reindex(columns=race_cols).fillna("–"), use_container_width=True)
 
     # --- map
     choice = st.sidebar.selectbox("Show on map", ["All races"] + race_cols)
     boats = list(per_boat.keys())
     visible = {b: st.sidebar.checkbox(b, value=True) for b in boats}
 
-    m = folium.Map(location=np.mean(centers, axis=0).tolist() if centers else DEFAULT_CENTER, zoom_start=14)
+    allpts = np.concatenate([np.column_stack([i["lat"], i["lon"]]) for i in per_boat.values()])
+    m = folium.Map(location=allpts.mean(axis=0).tolist(), zoom_start=14)
     if course.get("start_a") and course.get("start_b"):
         folium.PolyLine([course["start_a"], course["start_b"]], color="green", weight=5, tooltip="Start line").add_to(m)
     folium.Circle(course["start"], radius=r_start, color="green", fill=True, opacity=0.1).add_to(m)
@@ -289,8 +324,15 @@ else:
     folium.Circle(course["finish"], radius=r_fin, color="red", fill=True, opacity=0.1).add_to(m)
     for i, mk in enumerate(course["marks"]):
         folium.Marker(mk, popup=f"Mark {i + 1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
-    for b, a in flat:
-        if visible[b] and choice in ("All races", f"Race {a['race']}"):
-            folium.PolyLine(a["points"], color=COLORS[boats.index(b) % len(COLORS)], weight=4, opacity=0.85,
-                            tooltip=f"{b} – Race {a['race']} – {fmt(a['secs'])}").add_to(m)
+    for r in races:
+        if choice not in ("All races", f"Race {r['n']}"):
+            continue
+        for b, v in r["boats"].items():
+            if not visible[b]:
+                continue
+            end = v["end"] if v["finished"] else r["limit_t"] + pd.Timedelta(minutes=3)
+            label = fmt((v["end"] - r["start"]).total_seconds()) if v["finished"] else "DNF"
+            folium.PolyLine(track_slice(per_boat[b], v["own_start"], end),
+                            color=COLORS[boats.index(b) % len(COLORS)], weight=4, opacity=0.85,
+                            tooltip=f"{b} – Race {r['n']} – {label}").add_to(m)
     st_folium(m, width=1000, height=550, key="racer_map", returned_objects=[])
