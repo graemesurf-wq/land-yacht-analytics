@@ -12,8 +12,8 @@ st.title("🏁 Shared Race Course & Multi-Track Viewer")
 # After you draw your course once in "Designer Mode", copy the printed coordinates from the app 
 # and paste them into these variables below so they are locked for all future visitors.
 SAVED_COURSE = {
-    "start_line": [[53.4612, 9.9815], [53.4615, 9.9825]],  # Example Coordinates (Replace these!)
-    "finish_line": [[53.4650, 9.9880], [53.4652, 9.9890]], # Example Coordinates (Replace these!)
+    "start_line": [[53.4612, 9.9815], [53.4615, 9.9825]],  # Example Line Coordinates
+    "finish_line": [[53.4650, 9.9880], [53.4652, 9.9890]], # Example Line Coordinates
     "marks": [
         [53.4625, 9.9840],  # Mark 1
         [53.4635, 9.9860],  # Mark 2
@@ -29,7 +29,7 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
     st.subheader("🛠️ Course Designer Mode")
     st.markdown("1. Upload a reference `.fit` file to view the geography.\n2. Use the map drawing tools to draw your **Start Line** (1st line), **Finish Line** (2nd line), and **2-6 Turn Marks** (Pins).\n3. Copy the generated code from the sidebar and paste it into your `app.py` script on GitHub to save it permanently!")
     
-    uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"])
+    uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"], key="designer_uploader")
     points = []
     if uploaded_file:
         fitfile = FitFile(uploaded_file.read())
@@ -54,7 +54,7 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
     draw_tool = Draw(position='topleft', draw_options={'polyline': {'shapeOptions': {'color': '#00ffcc', 'weight': 5}}, 'marker': True, 'circle': False, 'rectangle': False, 'polygon': False, 'circlemarker': False})
     draw_tool.add_to(m)
     
-    map_output = st_folium(m, width=1100, height=600, returned_objects=["all_drawings"])
+    map_output = st_folium(m, width=1100, height=600, key="designer_map_widget", returned_objects=["all_drawings"])
     user_drawings = map_output.get("all_drawings") if map_output else None
     
     if user_drawings:
@@ -64,11 +64,11 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
             g_type = item['geometry']['type']
             coords = item['geometry']['coordinates']
             if g_type == "LineString":
-                lines.append([[pt[1], pt[0]] for pt in coords]) # Map expects [lat, lon]
+                lines.append([[pt[1], pt[0]] for pt in coords]) # Swap to [lat, lon]
             elif g_type == "Point":
                 markers.append([coords[1], coords[0]])
                 
-        # Generate configuration block text safely using clean string encapsulation
+        # Generate configuration block text safely
         st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
         st.sidebar.markdown("Copy this block and replace lines 14-24 in your `app.py` file code:")
         
@@ -82,10 +82,8 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         config_text += f'    "marks": {markers}\n'
         config_text += "}\n"
         config_text += "```"
-        
         st.sidebar.markdown(config_text)
         
-        # UI Validation warnings
         if len(lines) < 2: 
             st.warning(f"Please draw both a Start Line and Finish Line. Currently have: {len(lines)} lines.")
         if not (2 <= len(markers) <= 6): 
@@ -96,9 +94,8 @@ else:
     st.subheader("🏃‍♂️ Racer Track Uploader")
     st.markdown("The course layout is locked below. Upload your activity `.fit` file from today's session to see how well you matched the official race boundaries!")
     
-    uploaded_file = st.file_uploader("Upload your .fit track file", type=["fit"])
+    uploaded_file = st.file_uploader("Upload your .fit track file", type=["fit"], key="racer_uploader")
     
-    # 1. Parse visitor track FIRST to check if we can adjust the map center coordinates
     racer_points = []
     if uploaded_file is not None:
         fitfile = FitFile(uploaded_file.read())
@@ -108,39 +105,32 @@ else:
             if lat and lon:
                 racer_points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
     
-    # 2. DYNAMIC SNAP LOGIC: Determine where to center the map viewport
+    # Dynamic Snap calculations
     if len(racer_points) > 0:
-        # If a racer has uploaded a track, find its exact center to snap right to it
         df_racer = pd.DataFrame(racer_points, columns=["lat", "lon"])
         map_center = [df_racer["lat"].mean(), df_racer["lon"].mean()]
     elif SAVED_COURSE["start_line"] and len(SAVED_COURSE["start_line"]) > 0:
-        # Fallback to the saved start line coordinate position
         map_center = SAVED_COURSE["start_line"][0]
     else:
-        # Global generic coordinate fallback
         map_center = [53.46, 9.98]
         
-    # 3. Initialize the Map Canvas using the newly calculated dynamic map focus point
     m = folium.Map(location=map_center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
-    # Render Locked Start Line
-    if SAVED_COURSE["start_line"]:
+    # Render Locked Course Objects (Safely extracting pin point locations)
+    if SAVED_COURSE["start_line"] and len(SAVED_COURSE["start_line"]) > 0:
         folium.PolyLine(locations=SAVED_COURSE["start_line"], color="green", weight=7, opacity=0.9, tooltip="Official Start Line").add_to(m)
         folium.Marker(location=SAVED_COURSE["start_line"][0], popup="🟢 START LINE", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
         
-    # Render Locked Finish Line
-    if SAVED_COURSE["finish_line"]:
+    if SAVED_COURSE["finish_line"] and len(SAVED_COURSE["finish_line"]) > 0:
         folium.PolyLine(locations=SAVED_COURSE["finish_line"], color="red", weight=7, opacity=0.9, tooltip="Official Finish Line").add_to(m)
         folium.Marker(location=SAVED_COURSE["finish_line"][0], popup="🏁 FINISH LINE", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
         
-    # Render Locked Turning Marks
     colors = ["orange", "purple", "blue", "cadetblue", "darkpurple", "pink"]
     for idx, mark in enumerate(SAVED_COURSE["marks"]):
         folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors[idx % len(colors)], icon="info-sign")).add_to(m)
         
-    # 4. Draw visitor track overlay securely onto the map
     if uploaded_file is not None:
         if len(racer_points) > 0:
             folium.PolyLine(locations=racer_points, color="cyan", weight=5, opacity=0.85, tooltip="Your Uploaded Track").add_to(m)
@@ -148,5 +138,4 @@ else:
         else:
             st.error("No valid GPS data points found in your uploaded file.")
             
-    st_folium(m, width=1100, height=650, key="racer_map", returned_objects=[])
-
+    st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
