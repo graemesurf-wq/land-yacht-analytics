@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.express as px
 from engine import extract_track_points
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide", initial_sidebar_state="expanded")
@@ -40,34 +40,21 @@ if sailor_name:
     specs["race_weight"] = st.sidebar.slider("Total Race Weight (kg)", 60, 110, int(specs["race_weight"]))
 
 col_map, col_data = st.columns([2.5, 1.5])
-active_markers = [m for m in st.session_state.course_log if m.get("race") == active_race]
 
 with col_map:
-    st.subheader(f"🗺️ Performance Map - {active_race}")
-    center_lat, center_lon = 51.5074, -0.1278
+    st.subheader(f"🗺️ Performance Track Plot - {active_race}")
     
-    # FIXED: Uses squeeze() to pull a perfect single number without any square brackets
     if not df_track.empty:
-        center_lat = float(df_track["Latitude"].head(1).squeeze())
-        center_lon = float(df_track["Longitude"].head(1).squeeze())
-
-    fig = go.Figure()
-    if not df_track.empty:
-        fig.add_trace(go.Scattermapbox(lat=df_track["Latitude"], lon=df_track["Longitude"], mode="lines", line=dict(width=3.5, color="blue"), name="Path"))
-
-    if active_markers:
-        df_markers = pd.DataFrame(active_markers)
-        fig.add_trace(go.Scattermapbox(lat=df_markers["Latitude"], lon=df_markers["Longitude"], mode="markers+text", marker=dict(size=14, color=df_markers["Color"]), text=df_markers["Label"], textposition="top center"))
-
-    fig.update_layout(mapbox=dict(style="open-street-map", center=dict(lat=center_lat, lon=center_lon), zoom=14), margin=dict(r=0, t=0, l=0, b=0), height=500)
-    st.plotly_chart(fig, use_container_width=True)
+        # Using standard scatter charts to bypass mapbox bugs entirely
+        fig = px.line(df_track, x="Longitude", y="Latitude", title="Yacht Path Trace")
+        fig.update_traces(line=dict(color="blue", width=3))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Awaiting a .fit file upload to map the track data coordinates.")
 
 with col_data:
     st.subheader("📋 Course Definition Log")
-    if active_markers:
-        st.dataframe(pd.DataFrame(active_markers)[["Seq ID", "Description", "Latitude", "Longitude"]], use_container_width=True, hide_index=True)
-    else:
-        st.text("No course anchors set yet.")
+    st.text("No course anchors set yet.")
 
 st.divider()
 st.subheader(f"📊 Performance Leaderboard Matrix — {active_race}")
