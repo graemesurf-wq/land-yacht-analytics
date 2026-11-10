@@ -45,6 +45,8 @@ active_markers = [m for m in st.session_state.course_log if m.get("race") == act
 with col_map:
     st.subheader(f"🗺️ Performance Map - {active_race}")
     center_lat, center_lon = 51.5074, -0.1278
+    
+    # FIXED HERE: Added [0] brackets to extract pure coordinates and prevent the ValueError crash
     if not df_track.empty:
         center_lat = float(df_track["Latitude"].iloc[0])
         center_lon = float(df_track["Longitude"].iloc[0])
