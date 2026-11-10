@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("Isolate your racing arena layout and log fleet configuration parameters.")
+st.markdown("Click anywhere on the coordinate grid relative to the tracks to place your gates and cones.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -47,8 +46,8 @@ if sailor_name:
         st.session_state.race_specs[active_race][sailor_name] = {"tire_pressure": 1.4, "boom_height": 25, "sail_size": "5.5", "race_weight": 85}
 
     specs = st.session_state.race_specs[active_race][sailor_name]
-    specs["tire_pressure"] = st.sidebar.selectbox("Tires (Bar)", (1.0, 1.2, 1.4, 1.6, 1.8, 2.0), index=(1.0, 1.2, 1.4, 1.6, 1.8, 2.0).index(specs["tire_pressure"]))
-    specs["boom_height"] = st.sidebar.selectbox("Boom (cm)", (15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48), index=(15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48).index(specs["boom_height"]))
+    specs["tire_pressure"] = st.sidebar.selectbox("Tire Pressure (Bar)", (1.0, 1.2, 1.4, 1.6, 1.8, 2.0), index=(1.0, 1.2, 1.4, 1.6, 1.8, 2.0).index(specs["tire_pressure"]))
+    specs["boom_height"] = st.sidebar.selectbox("Boom Height (cm)", (15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48), index=(15, 17, 19, 22, 25, 28, 32, 36, 40, 44, 48).index(specs["boom_height"]))
     specs["sail_size"] = st.sidebar.selectbox("Sail Size", ("3", "3.5", "4.5", "5.5", "6.2"), index=("3", "3.5", "4.5", "5.5", "6.2").index(specs["sail_size"]))
     specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
 
@@ -57,60 +56,59 @@ col_map, col_data = st.columns([2.5, 1.5])
 current_markers = st.session_state.course_log[active_race]
 
 with col_map:
-    st.subheader(f"📈 Clickable Track Plot - {active_race}")
-    st.caption("💡 Upload a .fit file, then click directly on the blue track line to position your marks!")
+    st.subheader(f"📈 Clickable Canvas Grid - {active_race}")
     
     fig = go.Figure()
     
-    # Draw the main yacht track line
+    # Layer 1: Plot the raw track path line
     if not df_track.empty:
         fig.add_trace(go.Scatter(
             x=df_track["Lon"], y=df_track["Lat"], mode="lines",
-            line=dict(color="blue", width=3), name="Track",
-            hoverinfo="text", text="Click here to add mark"
+            line=dict(color="blue", width=3), name="Yacht Track"
         ))
-        
-    # Overlay the marks dropped via cursor clicks
+    
+    # Layer 2: Plot the clicked course marks on top
     if current_markers:
         df_markers = pd.DataFrame(current_markers)
         fig.add_trace(go.Scatter(
             x=df_markers["Longitude"], y=df_markers["Latitude"], mode="markers+text",
             marker=dict(size=14, color=df_markers["Color"]),
-            text=df_markers["Label"], textposition="top center", name="Marks"
+            text=df_markers["Label"], textposition="top center", name="Course Marks"
         ))
 
+    # Clean layout with no external background maps to crash
     fig.update_layout(
         xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
         yaxis=dict(title="Latitude", showgrid=True, zeroline=False),
-        margin=dict(r=10, t=10, l=10, b=10), height=500, clickmode="event"
+        margin=dict(r=10, t=10, l=10, b=10), height=500
     )
     
-    # Render the chart and listen to click feedback vectors safely
-    chart_click = st.plotly_chart(fig, use_container_width=True, on_click=True)
+    # Standard, built-in layout listener that captures any mouse coordinate selection securely
+    map_click = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
 
-    # Automatically process clicks directly on the track line
-    if chart_click and chart_click.get("points") and chart_click["points"].get("point_index"):
-        pt_idx = chart_click["points"]["point_index"]
-        if not df_track.empty and pt_idx < len(df_track):
-            c_lat = df_track["Lat"].iloc[pt_idx]
-            c_lon = df_track["Lon"].iloc[pt_idx]
-            num_markers = len(current_markers)
-            
-            if num_markers < 10:
-                c_num = num_markers + 1
-                if c_num == 1: lbl, clr = "Start Line A", "green"
-                elif c_num == 2: lbl, clr = "Start Line B", "green"
-                elif c_num == 3: lbl, clr = "Finish Line A", "red"
-                elif c_num == 4: lbl, clr = "Finish Line B", "red"
-                else: lbl, clr = f"Cone {c_num - 4}", "orange"
+    if map_widget := map_click:
+        if map_widget.get("selection") and map_widget["selection"].get("box"):
+            if map_widget["selection"]["box"]:
+                # Pull the raw coordinate values right out of the selection window box boundary click
+                c_lon = map_widget["selection"]["box"][0]["x"][0]
+                c_lat = map_widget["selection"]["box"][0]["y"][0]
                 
-                desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
-                
-                st.session_state.course_log[active_race].append({
-                    "Seq ID": c_num, "Description": desc, "Label": lbl,
-                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
-                })
-                st.rerun()
+                num_markers = len(current_markers)
+                if num_markers < 10:
+                    c_num = num_markers + 1
+                    if c_num == 1: lbl, clr = "Start Line A", "green"
+                    elif c_num == 2: lbl, clr = "Start Line B", "green"
+                    elif c_num == 3: lbl, clr = "Finish Line A", "red"
+                    elif c_num == 4: lbl, clr = "Finish Line B", "red"
+                    else: lbl, clr = f"Cone {c_num - 4}", "orange"
+                    
+                    desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
+                    
+                    st.session_state.course_log[active_race].append({
+                        "Seq ID": c_num, "Description": desc, "Label": lbl,
+                        "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                    })
+                    st.rerun()
 
     c1, c2 = st.columns(2)
     with c1:
@@ -126,10 +124,10 @@ with col_map:
 with col_data:
     st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click directly on the blue track line to drop **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click the line to drop **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click the line to drop **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click the line to drop **Finish Line Marker B**.")
+    if num_markers == 0: st.info("👉 Click anywhere on the grid relative to the turn to drop **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Click to drop **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Click to drop **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Click to drop **Finish Line Marker B**.")
     elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to drop: {10 - num_markers} (Min 2 cones).")
     else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
