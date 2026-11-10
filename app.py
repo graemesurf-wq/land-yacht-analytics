@@ -16,7 +16,7 @@ if 'race_specs' not in st.session_state: st.session_state.race_specs = {}
 st.sidebar.header("🕹️ Race Control Panel")
 total_races = st.sidebar.number_input("Total Races", min_value=1, max_value=20, value=3)
 race_options = [f"Race {i}" for i in range(1, total_races + 1)]
-active_race = st.sidebar.selectbox("Active Race", options=race_options)
+active_race = st.sidebar.selectbox("Active Race to Configure", options=race_options)
 allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=(10, 15, 20, 25, 30), index=2)
 
 if active_race not in st.session_state.course_log:
@@ -24,7 +24,7 @@ if active_race not in st.session_state.course_log:
 
 st.sidebar.divider()
 st.sidebar.header("📥 Sailor Setup Profile")
-uploaded_file = st.sidebar.file_uploader("Upload XOSS .fit file", type=["fit"])
+uploaded_file = st.sidebar.file_uploader("Upload your XOSS .fit file", type=["fit"])
 sailor_name = st.sidebar.text_input("Sailor Name / Yacht Number", placeholder="e.g., Yacht 42")
 
 df_track = pd.DataFrame()
@@ -51,18 +51,24 @@ with col_map:
     st.subheader(f"📈 Visual Performance Track - {active_race}")
     
     if not df_track.empty:
-        # Standard Plotly graph line with hover labels turned on
         fig = px.line(df_track, x="Lon", y="Lat", title="Yacht Sailing Path (Click on line to mark)", hover_data=["Time", "Kph"])
         fig.update_traces(line=dict(color="blue", width=3.5))
         
-        # FIXED: Built-in native selection trigger that bypasses made-up click settings
+        # FIXED: Forces crosshair selection mode active by default to disable the panning cursor block
+        fig.update_layout(
+            dragmode="select",
+            clickmode="event+select",
+            xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
+            yaxis=dict(title="Latitude", showgrid=True, zeroline=False)
+        )
+        
         chart_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
         
-        # Check if a point on the line trace was selected/clicked
         if chart_event and "selection" in chart_event and "points" in chart_event["selection"]:
             points_list = chart_event["selection"]["points"]
             if len(points_list) > 0:
-                pt_idx = points_list[0].get("point_index")
+                first_point = points_list[0]
+                pt_idx = first_point.get("point_index")
                 
                 if pt_idx is not None and pt_idx < len(df_track):
                     c_lat = float(df_track["Lat"].iloc[pt_idx])
