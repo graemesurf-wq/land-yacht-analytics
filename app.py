@@ -5,6 +5,7 @@ from folium.plugins import Draw
 from streamlit_folium import st_folium
 from fitparse import FitFile
 import numpy as np
+from datetime import datetime
 
 st.set_page_config(layout="wide")
 st.title("⛵ Land Yacht Multi-Race Performance Analyst")
@@ -23,73 +24,96 @@ SAVED_COURSE = {
 
 # --- GEOSPATIAL & ANCHOR TIMELINE MATH ---
 def haversine_dist(p1, p2):
-    """Calculates the distance in meters between two [lat, lon] points safely"""
     if not p1 or not p2:
         return 999999
     R = 6371000
-    phi1, phi2 = np.radians(p1[0]), np.radians(p2[0])
-    dphi = np.radians(p2[0] - p1[0])
-    dlon = np.radians(p2[1] - p1[1])
+    phi1, phi2 = np.radians(p1), np.radians(p2)
+    dphi = np.radians(p2 - p1)
+    dlon = np.radians(p2 - p1)
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
-def parse_multi_races(records, course_start, course_finish, mark1, race_duration_mins, max_races):
+def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, duration_list, max_races):
     """
-    Parses up to 8 races by isolating continuous chunks of active tracks.
+    State-Machine Parser: Slices raw logs into continuous data chunks based on time gaps,
+    then rigorously validates each chunk using the 5-minute Mark 1 rule. Non-validated
+    chunks (warmups, staging transits) are discarded, keeping the final race indices perfectly synced.
     """
     if len(records) < 20 or not course_start or not mark1:
-        return [{"name": "Full Session Log", "points": records}]
+        return [{"name": "Full Session Log", "points": [r["coords"] for r in records]}]
+
+    # Step 1: Detect recording breaks/gaps to split raw points into chronological continuous blocks
+    chunks = []
+    current_chunk = [records[0]]
+    
+    for idx in range(1, len(records)):
+        t_prev = records[idx-1]["timestamp"]
+        t_curr = records[idx]["timestamp"]
+        time_delta = (t_curr - t_prev).total_seconds() if (t_prev and t_curr) else 1
+        
+        # If recording gaps exceed 30 seconds, split into a new data chunk block
+        if time_delta > 30:
+            chunks.append(current_chunk)
+            current_chunk = [records[idx]]
+        else:
+            current_chunk.append(records[idx])
+    chunks.append(current_chunk)
 
     races = []
-    i = 0
-    total_pts = len(records)
-    
-    # Extract the anchor point center from the gate arrays to measure distances safely
-    gate_start_pt = course_start[0]
-    gate_finish_pt = course_finish[0] if course_finish else course_start[0]
-    mark1_pt = mark1[0] if isinstance(mark1[0], list) else mark1
-    
-    while i < total_pts - 1 and len(races) < max_races:
-        # Validate via Mark 1: Look ahead 5 minutes (approx 300 seconds at 1Hz recording)
-        validated = False
-        validation_window = min(i + 300, total_pts)
+    mark1_pt = mark1 if isinstance(mark1, list) and len(mark1) > 0 else mark1
+    gate_finish_pt = course_finish if course_finish else course_start
+
+    # Step 2: Evaluate chunks through the Validation State Machine
+    for chunk in chunks:
+        if len(races) >= max_races:
+            break
+        if len(chunk) < 30: # Ignore momentary sensor noise spikes
+            continue
+            
+        chunk_coords = [r["coords"] for r in chunk]
         
-        for v_idx in range(i, validation_window):
-            if haversine_dist(records[v_idx], mark1_pt) < 40:
+        # Validation Gate: Did they pass within 50m of Mark 1 in the first 5 minutes (300 points)?
+        validated = False
+        validation_limit = min(300, len(chunk_coords))
+        for v_idx in range(validation_limit):
+            if haversine_dist(chunk_coords[v_idx], mark1_pt) < 50:
                 validated = True
                 break
                 
+        # If they didn't pass Mark 1, this chunk was just staging or warmups. Discard it completely!
         if not validated:
-            i += 15  # Not a race sequence; skip forward
-            continue
+            continue 
             
-        # Countdown Delay sequence initiation (+3 minutes / 180 points from T_zero)
-        countdown_start_idx = min(i + 180, total_pts - 1)
+        # This is a verified race. Establish the structural variable durations based on valid race index
+        current_race_idx = len(races)
+        race_duration_mins = duration_list[current_race_idx] if current_race_idx < len(duration_list) else 20.0
         
-        # Race Duration calculation (e.g., 20 mins = 1200 points after countdown trigger)
+        # Countdown offset calculation (+3 minutes from chunk T_zero ignition)
+        countdown_start_idx = min(180, len(chunk_coords) - 1)
         duration_pts = int(race_duration_mins * 60)
-        timer_expiry_idx = min(countdown_start_idx + duration_pts, total_pts - 1)
+        timer_expiry_idx = min(countdown_start_idx + duration_pts, len(chunk_coords) - 1)
         
-        # Post-Timer Hard Stop Finish Gate Check
+        # Hard Stop Finish Gate Check after the timer runs out
         finish_crossed_idx = timer_expiry_idx
-        for f_idx in range(timer_expiry_idx, total_pts):
-            if haversine_dist(records[f_idx], gate_finish_pt) < 25:
+        found_finish = False
+        for f_idx in range(timer_expiry_idx, len(chunk_coords)):
+            if haversine_dist(chunk_coords[f_idx], gate_finish_pt) < 30:
                 finish_crossed_idx = f_idx
+                found_finish = True
                 break
                 
-        race_segment = records[i : finish_crossed_idx + 1]
-        if len(race_segment) > 60:
-            races.append({
-                "name": f"Race {len(races) + 1}",
-                "points": race_segment,
-                "start_index": i,
-                "end_index": finish_crossed_idx
-            })
+        # Tail-End Save Rule: If the race cuts off naturally before the finish gate, save what remains
+        if not found_finish:
+            finish_crossed_idx = len(chunk_coords) - 1
             
-        i = finish_crossed_idx + 1
+        races.append({
+            "name": f"Race {current_race_idx + 1}",
+            "points": chunk_coords[:finish_crossed_idx + 1],
+            "duration": race_duration_mins
+        })
         
     if not races:
-        return [{"name": "Full Data Track (No Races Validated)", "points": records}]
+        return [{"name": "Full Data Track (No Heats Validated)", "points": [r["coords"] for r in records]}]
     return races
 
 # --- SIDEBAR CONTROLS & DESIGNER VIEW ---
@@ -98,7 +122,7 @@ app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare T
 
 if app_mode == "Designer Mode (Create/Edit Course Layout)":
     st.subheader("🛠️ Course Designer Mode")
-    st.markdown("1. Upload file. 2. Draw **Start** line first, **Finish** line second, then drop **Mark 1** pin first. 3. Lock setup.")
+    st.markdown("1. Upload file. 2. Draw Start line first, Finish line second, drop Mark 1 pin. 3. Lock setup.")
     
     uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"], key="designer_uploader")
     if uploaded_file:
@@ -130,39 +154,38 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": 
-                    lines.append([[pt[1], pt[0]] for pt in coords]) # explicitly format to [lat, lon]
-                elif g_type == "Point": 
-                    markers.append([coords[1], coords[0]])
+                if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+                elif g_type == "Point": markers.append([coords, coords])
         
-        # Clean up nested drawing brackets before saving to avoid Folium mapping bugs
-        final_start = lines[0] if len(lines) >= 1 else []
-        final_finish = lines[1] if len(lines) >= 2 else []
-        
-        if final_start: folium.PolyLine(locations=final_start, color="green", weight=6).add_to(m)
-        if final_finish: folium.PolyLine(locations=final_finish, color="red", weight=6).add_to(m)
+        if lines: folium.PolyLine(locations=lines, color="green", weight=6).add_to(m)
+        if len(lines) >= 2: folium.PolyLine(locations=lines, color="red", weight=6).add_to(m)
         for mk in markers: folium.Marker(location=mk, icon=folium.Icon(color="orange")).add_to(m)
             
         st_folium(m, width=1100, height=600, key="designer_view_map", returned_objects=[])
         
         config_text = "SAVED_COURSE = {\n"
-        config_text += f'    "start_line": {final_start},\n'
-        config_text += f'    "finish_line": {final_finish},\n'
+        config_text += f'    "start_line": {lines if len(lines) >= 1 else []},\n'
+        config_text += f'    "finish_line": {lines if len(lines) >= 2 else []},\n'
         config_text += f'    "marks": {markers}\n'
         config_text += "}"
         st.sidebar.text_area(label="Course Coordinates Box", value=config_text, height=200)
 else:
     # --- RACER MODE ---
     st.sidebar.header("🏁 Analytics Configuration")
-    race_time_selection = st.sidebar.selectbox("Select Scheduled Race Duration:", [10, 15, 20, 25, 30], index=2)
-    max_races_input = st.sidebar.slider("Maximum number of races to scan for:", min_value=1, max_value=8, value=4)
+    max_races_input = st.sidebar.slider("Maximum number of races to scan for:", min_value=1, max_value=8, value=5)
     
+    durations_raw = st.sidebar.text_input("Race Durations in Minutes (comma separated):", value="15, 20, 15, 15, 10")
+    try:
+        parsed_durations = [float(d.strip()) for d in durations_raw.split(",")]
+    except:
+        parsed_durations = [20.0] * max_races_input
+        st.sidebar.error("Invalid duration format. Defaulted to 20 mins per heat.")
+
     st.subheader("🏃‍♂️ Multi-Race Segmentation Dashboard")
-    st.markdown("Upload your session `.fit` tracking logs below. The timeline processing engine will filter warmups, validate runs via Mark 1, and segment your individual heat iterations automatically.")
+    st.markdown("Upload session tracking logs. The timeline state machine will completely discard warmups and filter staging movements to isolate clean races.")
     
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
-    # Reconstruct master course boundaries cleanly from configurations
     course_start = SAVED_COURSE["start_line"]
     course_finish = SAVED_COURSE["finish_line"]
     course_marks = SAVED_COURSE["marks"]
@@ -171,66 +194,78 @@ else:
         lines, markers = [], []
         for item in st.session_state["saved_raw_drawings"]:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-            elif g_type == "Point": markers.append([coords[1], coords[0]])
-        course_start = lines[0] if len(lines) >= 1 else []
-        course_finish = lines[1] if len(lines) >= 2 else []
+            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+            elif g_type == "Point": markers.append([coords, coords])
+        course_start = lines if len(lines) >= 1 else []
+        course_finish = lines if len(lines) >= 2 else []
         course_marks = markers
 
     # Isolate Mark 1 coordinates specifically as the primary anchor point validation gate
-    mark1_anchor = course_marks[0] if course_marks else None
-    
+    mark1_anchor = course_marks if course_marks else None
     all_parsed_competitor_data = {}
     all_lats, all_lons = [], []
     
     if uploaded_files:
         for up_file in uploaded_files:
-            raw_pts = []
+            raw_records = []
             try:
                 fitfile = FitFile(up_file.read())
                 for record in fitfile.get_messages("record"):
-                    lat, lon = record.get_value("position_lat"), record.get_value("position_long")
+                    lat = record.get_value("position_lat")
+                    lon = record.get_value("position_long")
+                    t_val = record.get_value("timestamp")
+                    
                     if lat and lon:
-                        lat_d, lon_d = lat * (180.0 / 2**31), lon * (180.0 / 2**31)
-                        raw_pts.append((lat_d, lon_d))
+                        lat_d = lat * (180.0 / 2**31)
+                        lon_d = lon * (180.0 / 2**31)
+                        raw_records.append({
+                            "coords": (lat_d, lon_d),
+                            "timestamp": t_val
+                        })
                         all_lats.append(lat_d)
                         all_lons.append(lon_d)
                         
-                if len(raw_pts) > 0 and course_start:
-                    # Parse out individual races safely using updated structural formats
-                    segmented_heats = parse_multi_races(raw_pts, course_start, course_finish, mark1_anchor, race_time_selection, max_races_input)
+                if len(raw_records) > 0 and course_start:
+                    # Pass raw logs to the state machine parser
+                    segmented_heats = parse_multi_races_by_gaps(raw_records, course_start, course_finish, mark1_anchor, parsed_durations, max_races_input)
                     all_parsed_competitor_data[up_file.name] = segmented_heats
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
 
-    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else (course_start[0] if course_start else [53.46, 9.98])
+    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else (course_start if course_start else [53.46, 9.98])
     m = folium.Map(location=map_center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
-    # Draw course markings using sanitized flat list structures
     if course_start:
         folium.PolyLine(locations=course_start, color="green", weight=6).add_to(m)
-        folium.Marker(location=course_start[0], popup="🟢 START GATE", icon=folium.Icon(color="green", icon="play")).add_to(m)
+        folium.Marker(location=course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
     if course_finish:
         folium.PolyLine(locations=course_finish, color="red", weight=6).add_to(m)
-        folium.Marker(location=course_finish[0], popup="🏁 FINISH GATE", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
+        folium.Marker(location=course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
     for idx, mark in enumerate(course_marks):
         folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
-    # Isolated Race Heat Selector filter
+    # --- SIDEBAR INTERACTIVE FILTERS ---
     selected_heat_view = "Show All Context"
+    competitor_visibility = {}
+    
     if all_parsed_competitor_data:
         st.sidebar.subheader("🔍 Active Heat Isolate")
         heat_options = ["Show All Context"] + [f"Race {i+1}" for i in range(max_races_input)]
         selected_heat_view = st.sidebar.selectbox("Select a race event to sync on screen:", heat_options)
+        
+        st.sidebar.subheader("👥 Competitors Filter")
+        for c_name in all_parsed_competitor_data.keys():
+            competitor_visibility[c_name] = st.sidebar.checkbox(f"Display {c_name}", value=True)
 
-    # Plot lines securely
     competitor_colors = ["cyan", "yellow", "magenta", "lime", "orange", "pink", "white", "gold"]
     
     for c_idx, (c_name, heats) in enumerate(all_parsed_competitor_data.items()):
+        if not competitor_visibility.get(c_name, True):
+            continue
+            
         c_color = competitor_colors[c_idx % len(competitor_colors)]
-        
         for heat in heats:
             if selected_heat_view == "Show All Context":
                 opacity_val, weight_val = 0.5, 3
@@ -244,12 +279,12 @@ else:
 
     st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
     
-    # Telemetry data reporting tables
     if all_parsed_competitor_data:
         st.markdown("### 🏆 Segmented Race Diagnostics Analytics Matrix")
         for c_name, heats in all_parsed_competitor_data.items():
+            if not competitor_visibility.get(c_name, True): continue
             with st.expander(f"📋 Telemetry Profiles: {c_name}"):
                 cols = st.columns(len(heats) if len(heats) > 0 else 1)
                 for h_idx, heat in enumerate(heats):
                     col_target = cols[h_idx % len(cols)]
-                    col_target.metric(label=heat["name"], value=f"{len(heat['points'])} GPS Secs", delta="Sync Targeted" if selected_heat_view == heat["name"] else None)
+                    col_target.metric(label=heat["name"], value=f"{len(heat['points'])} secs", delta=f"{heat['duration']} min cap")
