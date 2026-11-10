@@ -15,42 +15,40 @@ if "designer_points" not in st.session_state:
 if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
-# --- STEP 1: LOCKED COURSE CONFIGURATION ---
-# Once you copy the configuration block from the sidebar text box, paste it directly here!
-# While this is empty, the app will dynamically use whatever you draw in Designer Mode.
+# --- STEP 1: HARDCODED VIRTUAL RACE GATES ---
+# Coordinates dynamically extracted from your uploaded yacht log
 SAVED_COURSE = {
-    "start_line": [],  
-    "finish_line": [], 
-    "marks": []   
+    "start_line": [[53.407453, 5.274961], [53.407824, 5.274307]],  
+    "finish_line": [[53.407453, 5.274961], [53.407824, 5.274307]], 
+    "marks": [[53.404604, 5.256711]]   
 }
 
-# --- BULLETPROOF BRACKET CLEANER FUNCTION ---
 def clean_coordinates(coord_input, expect_single_point=False):
     if not coord_input:
-        return [] if not expect_single_point else [53.46, 9.98]
+        return [] if not expect_single_point else [53.407, 5.274]
     try:
         while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input, list):
-            coord_input = coord_input[0]
+            coord_input = coord_input
         if expect_single_point:
             if isinstance(coord_input, list) and len(coord_input) >= 2:
-                return [float(coord_input[0]), float(coord_input[1])]
-            return [53.46, 9.98]
+                return [float(coord_input), float(coord_input)]
+            return [53.407, 5.274]
         else:
             cleaned_list = []
             for pair in coord_input:
                 if isinstance(pair, list) and len(pair) >= 2:
-                    cleaned_list.append([float(pair[0]), float(pair[1])])
+                    cleaned_list.append([float(pair), float(pair)])
             return cleaned_list
     except Exception:
-        return [] if not expect_single_point else [53.46, 9.98]
+        return [] if not expect_single_point else [53.407, 5.274]
 
 def haversine_dist(p1, p2):
     pt1 = clean_coordinates(p1, expect_single_point=True)
     pt2 = clean_coordinates(p2, expect_single_point=True)
     R = 6371000
-    phi1, phi2 = np.radians(pt1[0]), np.radians(pt2[0])
-    dphi = np.radians(pt2[0] - pt1[0])
-    dlon = np.radians(pt2[1] - pt1[1])
+    phi1, phi2 = np.radians(pt1), np.radians(pt2)
+    dphi = np.radians(pt2 - pt1)
+    dlon = np.radians(pt2 - pt1)
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
@@ -58,27 +56,10 @@ def generate_line_grid_points(line_endpoints, spacing_meters=5):
     cleaned_line = clean_coordinates(line_endpoints)
     if len(cleaned_line) < 2:
         return cleaned_line
-    p1, p2 = np.array(cleaned_line[0]), np.array(cleaned_line[-1])
+    p1, p2 = np.array(cleaned_line), np.array(cleaned_line[-1])
     total_distance = haversine_dist(p1.tolist(), p2.tolist())
     num_points = max(2, int(total_distance / spacing_meters))
-    return np.column_stack((np.linspace(p1[0], p2[0], num_points), np.linspace(p1[1], p2[1], num_points))).tolist()
-
-def generate_mock_competitor_data():
-    """Generates synthetic multi-race data for testing validation logic instantly"""
-    base_time = datetime(2026, 11, 10, 14, 0, 0)
-    yachts = {"Mock_Yacht_A.fit": [], "Mock_Yacht_B.fit": []}
-    for race_idx in range(5):
-        race_start_time = base_time + timedelta(minutes=race_idx * 40)
-        for name, drift in [("Mock_Yacht_A.fit", 0), ("Mock_Yacht_B.fit", 12)]:
-            for sec in range(1200):
-                current_time = race_start_time + timedelta(seconds=sec)
-                angle = (sec / 1200) * 2 * np.pi
-                lat = 53.463 + 0.003 * np.cos(angle) + (drift * 0.00001)
-                lon = 9.985 + 0.004 * np.sin(angle)
-                if sec == drift: lat, lon = 53.4613, 9.9820
-                if sec == 120: lat, lon = 53.4625, 9.9840
-                yachts[name].append({"coords": [lat, lon], "timestamp": current_time})
-    return yachts
+    return np.column_stack((np.linspace(p1, p2, num_points), np.linspace(p1, p2, num_points))).tolist()
 def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, course_marks, duration_list, max_races):
     cleaned_start = clean_coordinates(course_start)
     cleaned_finish = clean_coordinates(course_finish)
@@ -89,9 +70,8 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
 
     start_grid_nodes = generate_line_grid_points(cleaned_start, spacing_meters=5)
     finish_grid_nodes = generate_line_grid_points(cleaned_finish, spacing_meters=5) if cleaned_finish else start_grid_nodes
-    mark1_pt = cleaned_marks[0] if len(cleaned_marks) > 0 else None
+    mark1_pt = cleaned_marks if len(cleaned_marks) > 0 else None
     
-    # Pass 1: Collect raw timestamps when ANY boat passes a 2.5m grid node checkpoint circle
     start_crossings = []
     for c_name, records in all_competitors_raw.items():
         for r in records:
@@ -105,17 +85,16 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
     race_start_anchors = []
     
     if start_crossings:
-        current_cluster = [start_crossings[0]]
+        current_cluster = [start_crossings]
         for t in start_crossings[1:]:
             if (t - current_cluster[-1]).total_seconds() < 600:
                 current_cluster.append(t)
             else:
-                race_start_anchors.append(current_cluster[0])
+                race_start_anchors.append(current_cluster)
                 current_cluster = [t]
         if current_cluster:
-            race_start_anchors.append(current_cluster[0])
+            race_start_anchors.append(current_cluster)
 
-    # Pass 2: Synchronize fleet tracks symmetrically, extracting exact timing run durations
     fleet_final_segmented_data = {}
     validated_race_count = 0
     
@@ -129,7 +108,6 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
         race_duration_mins = duration_list[validated_race_count] if validated_race_count < len(duration_list) else 20.0
         timer_expiry_t = master_start_t + timedelta(minutes=race_duration_mins)
         
-        # Pass 3: Validate via 5-min Mark 1 checkpoint rule
         race_is_valid = False
         if mark1_pt:
             for c_name, records in all_competitors_raw.items():
@@ -200,7 +178,7 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         st.session_state["designer_points"] = pts
                 
     active_points = st.session_state["designer_points"]
-    center = [pd.DataFrame(active_points, columns=["lat", "lon"])["lat"].mean(), pd.DataFrame(active_points, columns=["lat", "lon"])["lon"].mean()] if active_points else [53.46, 9.98]
+    center = [pd.DataFrame(active_points, columns=["lat", "lon"])["lat"].mean(), pd.DataFrame(active_points, columns=["lat", "lon"])["lon"].mean()] if active_points else [53.407, 5.274]
     
     lock_course = st.sidebar.checkbox("🔒 Lock Course Setup & Generate Code", value=False)
     m = folium.Map(location=center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
@@ -220,8 +198,8 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords]) # Swap to lat, lon format cleanly
-                elif g_type == "Point": markers.append([coords[1], coords[0]])
+                if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+                elif g_type == "Point": markers.append([coords, coords])
         
         c_lines = clean_coordinates(lines)
         if c_lines: folium.PolyLine(locations=c_lines, color="green", weight=6).add_to(m)
@@ -252,18 +230,16 @@ else:
     
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
-    # --- FIXED: GRACEFUL DESINER FALLBACK FOR RACER GATES ---
     course_start = clean_coordinates(SAVED_COURSE["start_line"])
     course_finish = clean_coordinates(SAVED_COURSE["finish_line"])
     course_marks = [clean_coordinates(m, expect_single_point=True) for m in SAVED_COURSE["marks"]] if SAVED_COURSE["marks"] else []
 
-    # If SAVED_COURSE is empty, read the coordinates live from what was drawn in Designer view!
     if not course_start and st.session_state["saved_raw_drawings"]:
         lines, markers = [], []
         for item in st.session_state["saved_raw_drawings"]:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-            elif g_type == "Point": markers.append([coords[1], coords[0]])
+            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+            elif g_type == "Point": markers.append([coords, coords])
         
         raw_lines_clean = clean_coordinates(lines)
         if len(raw_lines_clean) > 2:
@@ -277,7 +253,6 @@ else:
     all_raw_competitors_dict = {}
     all_lats, all_lons = [], []
     
-    # Load custom files if uploaded, otherwise provide a pre-loaded prototype demo view
     if uploaded_files:
         for up_file in uploaded_files:
             raw_records = []
@@ -288,34 +263,28 @@ else:
                     lon = record.get_value("position_long")
                     t_val = record.get_value("timestamp")
                     if lat and lon and t_val:
-                        lat_d, lon_d = lat * (180.0 / 2**31), lon * (180.0 / 2**31)
+                        lat_d = lat * (180.0 / 2**31)
+                        lon_d = lon * (180.0 / 2**31)
                         raw_records.append({"coords": [lat_d, lon_d], "timestamp": t_val})
                         all_lats.append(lat_d)
                         all_lons.append(lon_d)
                 if len(raw_records) > 0: all_raw_competitors_dict[up_file.name] = raw_records
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
-    else:
-        st.info("💡 **Demo View Active:** Simulated tracks have been pre-loaded. Switch to Designer Mode to map out lines, or upload your own tracking logs above!")
-        all_raw_competitors_dict = generate_mock_competitor_data()
-        for c_name, recs in all_raw_competitors_dict.items():
-            for r in recs:
-                all_lats.append(r["coords"][0])
-                all_lons.append(r["coords"][1])
 
     all_parsed_competitor_data = {}
     if all_raw_competitors_dict and course_start:
         all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input)
 
-    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.463, 9.985]
+    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.407, 5.274]
     m = folium.Map(location=map_center, zoom_start=14, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
+    # 🟢 FIXED: Safe standard folium marker mapping references applied below
     for idx, mark in enumerate(course_marks):
-        folium.Marker(location=clean_coordinates(mark, expect_single_point=True), popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).m.add_to(m) if hasattr(folium.Marker, 'm') else folium.Marker(location=clean_coordinates(mark, expect_single_point=True), popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
+        folium.Marker(location=clean_coordinates(mark, expect_single_point=True), popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
-    # --- SIDEBAR INTERACTIVE ACTIVE FILTER BUTTONS ---
     selected_heat_view = "Show All Context"
     competitor_visibility = {}
     
@@ -342,7 +311,6 @@ else:
 
     st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
     
-    # --- DYNAMIC RACE DURATION METRICS MATRIX ---
     if all_parsed_competitor_data:
         st.markdown("### 🏆 Segmented Race Diagnostics Analytics Matrix")
         for c_name, heats in all_parsed_competitor_data.items():
