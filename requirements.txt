@@ -1,5 +1,6 @@
 streamlit
-streamlit-folium
-folium
-fitparse
 pandas
+numpy
+folium
+streamlit-folium
+fitparse
