@@ -16,6 +16,7 @@ if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
 # --- STEP 1: LOCKED COURSE CONFIGURATION ---
+# Once you copy the configuration block from the sidebar text box, paste it directly here!
 SAVED_COURSE = {
     "start_line": [],  
     "finish_line": [], 
@@ -27,22 +28,20 @@ def haversine_dist(p1, p2):
     if not p1 or not p2:
         return 999999
     R = 6371000
-    phi1, phi2 = np.radians(p1), np.radians(p2)
-    dphi = np.radians(p2 - p1)
-    dlon = np.radians(p2 - p1)
+    phi1, phi2 = np.radians(p1[0]), np.radians(p2[0])
+    dphi = np.radians(p2[0] - p1[0])
+    dlon = np.radians(p2[1] - p1[1])
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
 def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, duration_list, max_races):
     """
-    State-Machine Parser: Slices raw logs into continuous data chunks based on time gaps,
-    then rigorously validates each chunk using the 5-minute Mark 1 rule. Non-validated
-    chunks (warmups, staging transits) are discarded, keeping the final race indices perfectly synced.
+    State-Machine Parser: Slices logs using continuous time gaps, discarding
+    staging movements that do not hit the Mark 1 validation gate.
     """
     if len(records) < 20 or not course_start or not mark1:
         return [{"name": "Full Session Log", "points": [r["coords"] for r in records]}]
 
-    # Step 1: Detect recording breaks/gaps to split raw points into chronological continuous blocks
     chunks = []
     current_chunk = [records[0]]
     
@@ -51,7 +50,6 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
         t_curr = records[idx]["timestamp"]
         time_delta = (t_curr - t_prev).total_seconds() if (t_prev and t_curr) else 1
         
-        # If recording gaps exceed 30 seconds, split into a new data chunk block
         if time_delta > 30:
             chunks.append(current_chunk)
             current_chunk = [records[idx]]
@@ -60,19 +58,17 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
     chunks.append(current_chunk)
 
     races = []
-    mark1_pt = mark1 if isinstance(mark1, list) and len(mark1) > 0 else mark1
-    gate_finish_pt = course_finish if course_finish else course_start
+    mark1_pt = mark1[0] if isinstance(mark1, list) and len(mark1) > 0 and isinstance(mark1[0], list) else mark1
+    gate_finish_pt = course_finish[0] if course_finish and isinstance(course_finish, list) and isinstance(course_finish[0], list) else course_finish
 
-    # Step 2: Evaluate chunks through the Validation State Machine
     for chunk in chunks:
         if len(races) >= max_races:
             break
-        if len(chunk) < 30: # Ignore momentary sensor noise spikes
+        if len(chunk) < 30:
             continue
             
         chunk_coords = [r["coords"] for r in chunk]
         
-        # Validation Gate: Did they pass within 50m of Mark 1 in the first 5 minutes (300 points)?
         validated = False
         validation_limit = min(300, len(chunk_coords))
         for v_idx in range(validation_limit):
@@ -80,29 +76,24 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
                 validated = True
                 break
                 
-        # If they didn't pass Mark 1, this chunk was just staging or warmups. Discard it completely!
         if not validated:
             continue 
             
-        # This is a verified race. Establish the structural variable durations based on valid race index
         current_race_idx = len(races)
         race_duration_mins = duration_list[current_race_idx] if current_race_idx < len(duration_list) else 20.0
         
-        # Countdown offset calculation (+3 minutes from chunk T_zero ignition)
         countdown_start_idx = min(180, len(chunk_coords) - 1)
         duration_pts = int(race_duration_mins * 60)
         timer_expiry_idx = min(countdown_start_idx + duration_pts, len(chunk_coords) - 1)
         
-        # Hard Stop Finish Gate Check after the timer runs out
         finish_crossed_idx = timer_expiry_idx
         found_finish = False
         for f_idx in range(timer_expiry_idx, len(chunk_coords)):
-            if haversine_dist(chunk_coords[f_idx], gate_finish_pt) < 30:
+            if gate_finish_pt and haversine_dist(chunk_coords[f_idx], gate_finish_pt) < 30:
                 finish_crossed_idx = f_idx
                 found_finish = True
                 break
                 
-        # Tail-End Save Rule: If the race cuts off naturally before the finish gate, save what remains
         if not found_finish:
             finish_crossed_idx = len(chunk_coords) - 1
             
@@ -154,18 +145,18 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
-                elif g_type == "Point": markers.append([coords, coords])
+                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
+                elif g_type == "Point": markers.append([coords[1], coords[0]])
         
-        if lines: folium.PolyLine(locations=lines, color="green", weight=6).add_to(m)
-        if len(lines) >= 2: folium.PolyLine(locations=lines, color="red", weight=6).add_to(m)
+        if lines: folium.PolyLine(locations=lines if not isinstance(lines[0][0], list) else lines[0], color="green", weight=6).add_to(m)
+        if len(lines) >= 2: folium.PolyLine(locations=lines[1], color="red", weight=6).add_to(m)
         for mk in markers: folium.Marker(location=mk, icon=folium.Icon(color="orange")).add_to(m)
             
         st_folium(m, width=1100, height=600, key="designer_view_map", returned_objects=[])
         
         config_text = "SAVED_COURSE = {\n"
-        config_text += f'    "start_line": {lines if len(lines) >= 1 else []},\n'
-        config_text += f'    "finish_line": {lines if len(lines) >= 2 else []},\n'
+        config_text += f'    "start_line": {lines[0] if len(lines) >= 1 else []},\n'
+        config_text += f'    "finish_line": {lines[1] if len(lines) >= 2 else []},\n'
         config_text += f'    "marks": {markers}\n'
         config_text += "}"
         st.sidebar.text_area(label="Course Coordinates Box", value=config_text, height=200)
@@ -194,14 +185,13 @@ else:
         lines, markers = [], []
         for item in st.session_state["saved_raw_drawings"]:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
-            elif g_type == "Point": markers.append([coords, coords])
-        course_start = lines if len(lines) >= 1 else []
-        course_finish = lines if len(lines) >= 2 else []
+            if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
+            elif g_type == "Point": markers.append([coords[1], coords[0]])
+        course_start = lines[0] if len(lines) >= 1 else []
+        course_finish = lines[1] if len(lines) >= 2 else []
         course_marks = markers
 
-    # Isolate Mark 1 coordinates specifically as the primary anchor point validation gate
-    mark1_anchor = course_marks if course_marks else None
+    mark1_anchor = course_marks[0] if course_marks else None
     all_parsed_competitor_data = {}
     all_lats, all_lons = [], []
     
@@ -226,23 +216,29 @@ else:
                         all_lons.append(lon_d)
                         
                 if len(raw_records) > 0 and course_start:
-                    # Pass raw logs to the state machine parser
                     segmented_heats = parse_multi_races_by_gaps(raw_records, course_start, course_finish, mark1_anchor, parsed_durations, max_races_input)
                     all_parsed_competitor_data[up_file.name] = segmented_heats
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
 
-    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else (course_start if course_start else [53.46, 9.98])
+    # FIX: Extracted specific first indexing coordinate safely to prevent Folium map location type crashes
+    if all_lats:
+        map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
+    elif course_start and isinstance(course_start, list) and len(course_start) > 0:
+        map_center = course_start[0] if isinstance(course_start[0], list) else course_start
+    else:
+        map_center = [53.46, 9.98]
+        
     m = folium.Map(location=map_center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
     if course_start:
         folium.PolyLine(locations=course_start, color="green", weight=6).add_to(m)
-        folium.Marker(location=course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
+        folium.Marker(location=course_start[0] if isinstance(course_start[0], list) else course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
     if course_finish:
         folium.PolyLine(locations=course_finish, color="red", weight=6).add_to(m)
-        folium.Marker(location=course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
+        folium.Marker(location=course_finish[0] if isinstance(course_finish[0], list) else course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
     for idx, mark in enumerate(course_marks):
         folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
