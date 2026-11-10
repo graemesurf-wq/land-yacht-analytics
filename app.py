@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
@@ -56,47 +57,81 @@ col_map, col_data = st.columns([2.5, 1.5])
 current_markers = st.session_state.course_log[active_race]
 
 with col_map:
-    st.subheader(f"📈 Telemetry Path Plot - {active_race}")
+    st.subheader(f"📈 Clickable Track Plot - {active_race}")
+    st.caption("💡 Upload a .fit file, then click directly on the blue track line to position your marks!")
+    
+    fig = go.Figure()
+    
+    # Draw the main yacht track line
     if not df_track.empty:
-        # Standard fast line graph to bypass all map errors completely
-        fig = px.line(df_track, x="Lon", y="Lat", title="Yacht Sailing Footprint")
-        fig.update_traces(line=dict(color="blue", width=3))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Awaiting a .fit file upload to plot the track coordinates.")
+        fig.add_trace(go.Scatter(
+            x=df_track["Lon"], y=df_track["Lat"], mode="lines",
+            line=dict(color="blue", width=3), name="Track",
+            hoverinfo="text", text="Click here to add mark"
+        ))
+        
+    # Overlay the marks dropped via cursor clicks
+    if current_markers:
+        df_markers = pd.DataFrame(current_markers)
+        fig.add_trace(go.Scatter(
+            x=df_markers["Longitude"], y=df_markers["Latitude"], mode="markers+text",
+            marker=dict(size=14, color=df_markers["Color"]),
+            text=df_markers["Label"], textposition="top center", name="Marks"
+        ))
+
+    fig.update_layout(
+        xaxis=dict(title="Longitude", showgrid=True, zeroline=False),
+        yaxis=dict(title="Latitude", showgrid=True, zeroline=False),
+        margin=dict(r=10, t=10, l=10, b=10), height=500, clickmode="event"
+    )
+    
+    # Render the chart and listen to click feedback vectors safely
+    chart_click = st.plotly_chart(fig, use_container_width=True, on_click=True)
+
+    # Automatically process clicks directly on the track line
+    if chart_click and chart_click.get("points") and chart_click["points"].get("point_index"):
+        pt_idx = chart_click["points"]["point_index"]
+        if not df_track.empty and pt_idx < len(df_track):
+            c_lat = df_track["Lat"].iloc[pt_idx]
+            c_lon = df_track["Lon"].iloc[pt_idx]
+            num_markers = len(current_markers)
+            
+            if num_markers < 10:
+                c_num = num_markers + 1
+                if c_num == 1: lbl, clr = "Start Line A", "green"
+                elif c_num == 2: lbl, clr = "Start Line B", "green"
+                elif c_num == 3: lbl, clr = "Finish Line A", "red"
+                elif c_num == 4: lbl, clr = "Finish Line B", "red"
+                else: lbl, clr = f"Cone {c_num - 4}", "orange"
+                
+                desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
+                
+                st.session_state.course_log[active_race].append({
+                    "Seq ID": c_num, "Description": desc, "Label": lbl,
+                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                })
+                st.rerun()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("↩️ Undo Last", use_container_width=True):
+            if st.session_state.course_log[active_race]:
+                st.session_state.course_log[active_race].pop()
+                st.rerun()
+    with c2:
+        if st.button("🗑️ Clear Layout", use_container_width=True):
+            st.session_state.course_log[active_race] = []
+            st.rerun()
 
 with col_data:
-    st.subheader("📋 Course Definition Parameters")
+    st.subheader("📋 Course Definition Log")
     num_markers = len(current_markers)
-    
-    # 4 to 10 numerical layout definitions input boxes
-    if num_markers < 4:
-        st.markdown("**🏁 Define Gates**")
-        in_lat = st.number_input("Marker Latitude", value=0.0, format="%.6f")
-        in_lon = st.number_input("Marker Longitude", value=0.0, format="%.6f")
-        
-        lbl = "Start Line A" if num_markers == 0 else ("Start Line B" if num_markers == 1 else ("Finish Line A" if num_markers == 2 else "Finish Line B"))
-        clr = "green" if num_markers < 2 else "red"
-        desc = "Gate"
-    else:
-        st.markdown(f"**🟠 Define Cones (Max 6)**")
-        in_lat = st.number_input(f"Cone {num_markers - 3} Latitude", value=0.0, format="%.6f")
-        in_lon = st.number_input(f"Cone {num_markers - 3} Longitude", value=0.0, format="%.6f")
-        lbl = f"Cone {num_markers - 3}"
-        clr = "orange"
-        desc = "Cone Mark"
-
-    if num_markers < 10:
-        if st.button("➕ Log Marker Coordinate"):
-            st.session_state.course_log[active_race].append({"Seq ID": num_markers + 1, "Description": desc, "Label": lbl, "Latitude": in_lat, "Longitude": in_lon, "Color": clr})
-            st.rerun()
-    else:
-        st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
-
-    if st.button("↩️ Undo Last"):
-        if st.session_state.course_log[active_race]:
-            st.session_state.course_log[active_race].pop()
-            st.rerun()
+    if num_markers == 0: st.info("👉 Click directly on the blue track line to drop **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Click the line to drop **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Click the line to drop **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Click the line to drop **Finish Line Marker B**.")
+    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones left to drop: {10 - num_markers} (Min 2 cones).")
+    else: st.warning("Maximum capacity of 6 Cones reached. Layout locked.")
 
     if current_markers:
         st.dataframe(pd.DataFrame(current_markers)[["Seq ID", "Description", "Latitude", "Longitude"]], use_container_width=True, hide_index=True)
