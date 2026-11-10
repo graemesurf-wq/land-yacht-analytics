@@ -6,7 +6,7 @@ from engine import extract_track_points
 st.set_page_config(page_title="VMC Analyzer", layout="wide", initial_sidebar_state="expanded")
 st.title("⛵ Land Yacht VMC Performance Analyzer")
 
-if 'course_log' not in st.session_state: st.session_state.course_log = []
+if 'course_log' not in st.session_state: st.session_state.course_log = list()
 if 'sailor_registry' not in st.session_state: st.session_state.sailor_registry = {}
 if 'race_specs' not in st.session_state: st.session_state.race_specs = {}
 
@@ -46,10 +46,10 @@ with col_map:
     st.subheader(f"🗺️ Performance Map - {active_race}")
     center_lat, center_lon = 51.5074, -0.1278
     
-    # FIXED HERE: Added [0] brackets to extract pure coordinates and prevent the ValueError crash
+    # FIXED: Uses squeeze() to pull a perfect single number without any square brackets
     if not df_track.empty:
-        center_lat = float(df_track["Latitude"].iloc[0])
-        center_lon = float(df_track["Longitude"].iloc[0])
+        center_lat = float(df_track["Latitude"].head(1).squeeze())
+        center_lon = float(df_track["Longitude"].head(1).squeeze())
 
     fig = go.Figure()
     if not df_track.empty:
@@ -71,7 +71,7 @@ with col_data:
 
 st.divider()
 st.subheader(f"📊 Performance Leaderboard Matrix — {active_race}")
-fleet_rows = []
+fleet_rows = list()
 if active_race in st.session_state.race_specs:
     for name, tuning in st.session_state.race_specs[active_race].items():
         fleet_rows.append({
