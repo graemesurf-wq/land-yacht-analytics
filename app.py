@@ -11,8 +11,6 @@ st.title("🏁 Shared Race Course & Multi-Track Viewer")
 # --- STEP 1: INITIALIZE PERSISTENT STORAGE ---
 if "designer_points" not in st.session_state:
     st.session_state["designer_points"] = []
-if "racer_points" not in st.session_state:
-    st.session_state["racer_points"] = []
 if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
@@ -58,7 +56,6 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
     else:
         center = [53.46, 9.98]
     
-    # Checkbox to freeze drawing tool and calculate configurations
     lock_course = st.sidebar.checkbox("🔒 Lock Course Setup & Generate Code", value=False)
     
     m = folium.Map(location=center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
@@ -67,8 +64,6 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         folium.PolyLine(locations=active_points, color="white", weight=3, opacity=0.4, tooltip="Reference Track").add_to(m)
         
     if not lock_course:
-        # ONLY inject drawing controls when editing mode is completely unlocked
-        # This completely avoids Leaflet component rendering loops and duplication glitches
         draw_tool = Draw(
             position='topleft', 
             draw_options={
@@ -85,10 +80,7 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
             st.sidebar.info("✨ Drawings captured! Check the 'Lock Course' box above to view configuration outputs.")
             
     else:
-        # VISUAL VIEW MODE: The user has checked "Lock Course Setup"
-        # We process the captured geometry coordinates safely without drawing features active
         user_drawings = st.session_state["saved_raw_drawings"]
-        
         lines = []
         markers = []
         if user_drawings:
@@ -96,11 +88,10 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
                 g_type = item['geometry']['type']
                 coords = item['geometry']['coordinates']
                 if g_type == "LineString":
-                    lines.append([[pt[1], pt[0]] for pt in coords]) # Flip map lon/lat to leaflet lat/lon
+                    lines.append([[pt[1], pt[0]] for pt in coords])
                 elif g_type == "Point":
                     markers.append([coords[1], coords[0]])
         
-        # Render the lines as processed finalized static layers
         if len(lines) >= 1:
             folium.PolyLine(locations=lines[0], color="green", weight=6, opacity=0.9).add_to(m)
             folium.Marker(location=lines[0][0], popup="🟢 START", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
@@ -110,12 +101,10 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         for idx, mk in enumerate(markers):
             folium.Marker(location=mk, popup=f"Mark {idx+1}", icon=folium.Icon(color="orange", icon="info-sign")).add_to(m)
             
-        # Keep map container rendered on screen
         st_folium(m, width=1100, height=600, key="designer_view_map", returned_objects=[])
         
-        # Generate the Code block print out safely in the sidebar layout
         st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
-        st.sidebar.markdown("Copy this block and replace lines 20-24 in your code:")
+        st.sidebar.markdown("Copy this block and replace lines 21-25 in your code:")
         
         config_text = "```python\n"
         config_text += "SAVED_COURSE = {\n"
@@ -129,26 +118,38 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
 else:
     # --- RACER MODE ---
     st.subheader("🏃‍♂️ Racer Track Uploader")
-    st.markdown("The course layout is locked below. Upload your activity `.fit` file from today's session to see how well you matched the official race boundaries!")
+    st.markdown("The course layout is locked below. **Select and upload multiple .fit files simultaneously** from today's session to overlay and compare all tracks at once!")
     
-    uploaded_file = st.file_uploader("Upload your .fit track file", type=["fit"], key="racer_uploader")
+    # Notice accept_multiple_files=True
+    uploaded_files = st.file_uploader("Upload your .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
-    if uploaded_file is not None:
-        racer_points = []
-        fitfile = FitFile(uploaded_file.read())
-        for record in fitfile.get_messages("record"):
-            lat = record.get_value("position_lat")
-            lon = record.get_value("position_long")
-            if lat and lon:
-                racer_points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
-        st.session_state["racer_points"] = racer_points
-        
-    active_racer_points = st.session_state["racer_points"]
+    all_tracks_data = []
+    all_lats = []
+    all_lons = []
     
-    # Read the active layout configurations safely
-    lines_source = SAVED_COURSE["start_line"] if SAVED_COURSE["start_line"] else (st.session_state["saved_raw_drawings"] if st.session_state["saved_raw_drawings"] else None)
+    # Process files if they are provided
+    if uploaded_files:
+        for up_file in uploaded_files:
+            racer_points = []
+            try:
+                # fitparse requires reading bytes streams
+                fitfile = FitFile(up_file.read())
+                for record in fitfile.get_messages("record"):
+                    lat = record.get_value("position_lat")
+                    lon = record.get_value("position_long")
+                    if lat and lon:
+                        lat_deg = lat * (180.0 / 2**31)
+                        lon_deg = lon * (180.0 / 2**31)
+                        racer_points.append((lat_deg, lon_deg))
+                        all_lats.append(lat_deg)
+                        all_lons.append(lon_deg)
+                
+                if len(racer_points) > 0:
+                    all_tracks_data.append({"name": up_file.name, "points": racer_points})
+            except Exception as e:
+                st.error(f"Error parsing file {up_file.name}: {e}")
     
-    # Process geometry configurations for racers
+    # Reconstruct course boundaries from saved dictionary or raw session states
     racer_lines = []
     racer_marks = []
     if SAVED_COURSE["start_line"]:
@@ -164,9 +165,9 @@ else:
             elif g_type == "Point":
                 racer_marks.append([coords[1], coords[0]])
 
-    if len(active_racer_points) > 0:
-        df_racer = pd.DataFrame(active_racer_points, columns=["lat", "lon"])
-        map_center = [df_racer["lat"].mean(), df_racer["lon"].mean()]
+    # Center map camera focus points
+    if len(all_lats) > 0:
+        map_center = [sum(all_lats) / len(all_lats), sum(all_lons) / len(all_lons)]
     elif len(racer_lines) >= 1:
         map_center = racer_lines[0][0]
     else:
@@ -176,7 +177,7 @@ else:
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
-    # Render final course layout marks securely
+    # Render Layout Elements securely
     if len(racer_lines) >= 1:
         folium.PolyLine(locations=racer_lines[0], color="green", weight=7, opacity=0.9, tooltip="Official Start Line").add_to(m)
         folium.Marker(location=racer_lines[0][0], popup="🟢 START LINE", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
@@ -184,12 +185,31 @@ else:
         folium.PolyLine(locations=racer_lines[1], color="red", weight=7, opacity=0.9, tooltip="Official Finish Line").add_to(m)
         folium.Marker(location=racer_lines[1][0], popup="🏁 FINISH LINE", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
     
-    colors = ["orange", "purple", "blue", "cadetblue", "darkpurple", "pink"]
+    colors_marks = ["orange", "purple", "blue", "cadetblue", "darkpurple", "pink"]
     for idx, mark in enumerate(racer_marks):
-        folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors[idx % len(colors)], icon="info-sign")).add_to(m)
+        folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors_marks[idx % len(colors_marks)], icon="info-sign")).add_to(m)
         
-    if len(active_racer_points) > 0:
-        folium.PolyLine(locations=active_racer_points, color="cyan", weight=5, opacity=0.85, tooltip="Your Uploaded Track").add_to(m)
-        st.success("🎉 Your track was loaded successfully over the course map layout below!")
-            
-    st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
+    # --- RENDER COMPETING TRACKS USING CYCLING TRACE COLORS ---
+    track_colors = ["cyan", "yellow", "magenta", "lime", "red", "gold", "white", "orange"]
+    
+    if all_tracks_data:
+        st.success(f"🎉 Successfully loaded **{len(all_tracks_data)}** tracks onto the map!")
+        
+        # Display a mini index card showing what track color belongs to which file
+        st.markdown("### 🏆 Competitor File Color Index")
+        cols = st.columns(min(len(all_tracks_data), 4))
+        
+        for idx, track in enumerate(all_tracks_data):
+            color = track_colors[idx % len(track_colors)]
+            # Draw the trace on the map
+            folium.PolyLine(
+                locations=track["points"], 
+                color=color, 
+                weight=4, 
+                opacity=0.85, 
+                tooltip=track["name"]
+            ).add_to(m)
+# Print file label color card indicators below map screen view layouts
+col_target = cols[idx % 4]
+col_target.markdown(f"🎨 Track {idx+1}: {track['name']} is drawn in {color.upper()}")
+st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
