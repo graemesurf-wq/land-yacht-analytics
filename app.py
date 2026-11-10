@@ -8,30 +8,28 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title(" ⛵ First-Crossing Synchronized Land Yacht Analyst")
+st.title("⛵ First-Crossing Synchronized Land Yacht Analyst")
 
 if "designer_points" not in st.session_state:
     st.session_state["designer_points"] = []
 if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
-# --- STEP 1: LOCKED COURSE CONFIGURATION ---
-# Once you copy the configuration block from the sidebar text box, paste it directly here!
-# While this is empty, the app dynamically targets your real uploaded log positions.
+# --- STEP 1: FIXED COURSE CONFIGURATION ---
+# Leave this empty while testing! Your drawn marks will pass over automatically.
 SAVED_COURSE = {
     "start_line": [],  
     "finish_line": [], 
     "marks": []   
 }
 
-# --- BULLETPROOF BRACKET CLEANER FUNCTION ---
 def clean_coordinates(coord_input, expect_single_point=False, default_coords=None):
     fallback = default_coords if default_coords else [53.407, 5.274]
     if not coord_input:
         return [] if not expect_single_point else fallback
     try:
-        while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input[0], list):
-            coord_input = coord_input[0]
+        while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input, list):
+            coord_input = coord_input
         if expect_single_point:
             if isinstance(coord_input, list) and len(coord_input) >= 2:
                 return [float(coord_input[0]), float(coord_input[1])]
@@ -65,10 +63,6 @@ def generate_line_grid_points(line_endpoints, spacing_meters=5, default_coords=N
     num_points = max(2, int(total_distance / spacing_meters))
     return np.column_stack((np.linspace(p1[0], p2[0], num_points), np.linspace(p1[1], p2[1], num_points))).tolist()
 def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, course_marks, duration_list, max_races, fallback_anchor=None):
-    """
-    Shared Clock Sync Engine: Uses the absolute first crossing across the entire fleet
-    as the universal start anchor for all yachts, then tracks until individual finish crossing.
-    """
     cleaned_start = clean_coordinates(course_start)
     cleaned_finish = clean_coordinates(course_finish)
     cleaned_marks = [clean_coordinates(m, expect_single_point=True, default_coords=fallback_anchor) for m in course_marks] if course_marks else []
@@ -89,7 +83,6 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                 start_crossings.append(r["timestamp"])
 
     if not start_crossings:
-        # Fallback interval clip window segments if no physical triggers occur
         return {c_name: [{"name": f"Race {idx+1}", "points": [r["coords"] for r in recs[:1200]], "duration": 20.0, "time_secs": min(1200, len(recs))} for idx in range(min(max_races, 5))][:max_races] for c_name, recs in all_competitors_raw.items()}
 
     start_crossings.sort()
@@ -111,8 +104,7 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
         fleet_final_segmented_data[c_name] = []
         
     for master_start_t in race_start_anchors:
-        if validated_race_count >= max_races: 
-            break
+        if validated_race_count >= max_races: break
         race_duration_mins = duration_list[validated_race_count] if validated_race_count < len(duration_list) else 20.0
         timer_expiry_t = master_start_t + timedelta(minutes=race_duration_mins)
         
@@ -131,9 +123,7 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                         found_finish = True
                         break
             
-            if actual_finish_time is None: 
-                actual_finish_time = timer_expiry_t
-                
+            if actual_finish_time is None: actual_finish_time = timer_expiry_t
             elapsed_seconds = int((actual_finish_time - master_start_t).total_seconds())
             
             if len(race_points) > 10:
@@ -159,7 +149,8 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         pts = []
         fitfile = FitFile(uploaded_file.read())
         for r in fitfile.get_messages("record"):
-            lat, lon = r.get_value("position_lat"), r.get_value("position_long")
+            lat = r.get_value("position_lat")
+            lon = r.get_value("position_long")
             if lat and lon: pts.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
         st.session_state["designer_points"] = pts
                 
@@ -184,7 +175,7 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords]) # Clean leaf coordinate swap
+                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
                 elif g_type == "Point": markers.append([coords[1], coords[0]])
         
         c_lines = clean_coordinates(lines)
@@ -215,6 +206,28 @@ else:
     st.subheader("🏃‍♂️ Multi-Race Fleet-Synchronized Dashboard")
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
+    # --- FIXED: GRACEFUL TAB MEMORY LINK FOR LIVE TESTING ---
+    course_start = clean_coordinates(SAVED_COURSE["start_line"])
+    course_finish = clean_coordinates(SAVED_COURSE["finish_line"])
+    course_marks = [clean_coordinates(m, expect_single_point=True) for m in SAVED_COURSE["marks"]] if SAVED_COURSE["marks"] else []
+
+    # If SAVED_COURSE in code is empty, look at what you just drew in the other tab!
+    if not course_start and st.session_state["saved_raw_drawings"]:
+        lines, markers = [], []
+        for item in st.session_state["saved_raw_drawings"]:
+            g_type = item['geometry']['type']
+            coords = item['geometry']['coordinates']
+            if g_type == "LineString": 
+                lines.append([[pt[1], pt[0]] for pt in coords]) # Fixed alignment loop
+            elif g_type == "Point": 
+                markers.append([coords[1], coords[0]])
+        
+        raw_lines_clean = clean_coordinates(lines)
+        if len(raw_lines_clean) > 1:
+            course_start = raw_lines_clean
+            course_finish = raw_lines_clean
+        course_marks = [clean_coordinates(m, expect_single_point=True) for m in markers]
+
     all_raw_competitors_dict = {}
     all_lats, all_lons = [], []
     first_file_anchor = None
@@ -237,29 +250,9 @@ else:
                 if len(raw_records) > 0: 
                     all_raw_competitors_dict[up_file.name] = raw_records
                     if first_file_anchor is None:
-                        # FIXED: Safe array element lookup index applied to isolate starting position pairs
                         first_file_anchor = raw_records[0]["coords"]
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
-
-    # Process gate layouts securely
-    course_start = clean_coordinates(SAVED_COURSE["start_line"])
-    course_finish = clean_coordinates(SAVED_COURSE["finish_line"])
-    course_marks = [clean_coordinates(m, expect_single_point=True, default_coords=first_file_anchor) for m in SAVED_COURSE["marks"]] if SAVED_COURSE["marks"] else []
-
-    if not course_start and st.session_state["saved_raw_drawings"]:
-        lines, markers = [], []
-        for item in st.session_state["saved_raw_drawings"]:
-            g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
-            elif g_type == "Point": markers.append([coords, coords])
-        raw_lines_clean = clean_coordinates(lines)
-        if len(raw_lines_clean) > 2:
-            course_start = raw_lines_clean[:len(raw_lines_clean)//2]
-            course_finish = raw_lines_clean[len(raw_lines_clean)//2:]
-        else:
-            course_start, course_finish = raw_lines_clean, raw_lines_clean
-        course_marks = [clean_coordinates(m, expect_single_point=True) for m in markers]
 
     all_parsed_competitor_data = {}
     if all_raw_competitors_dict:
@@ -268,8 +261,11 @@ else:
     map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.407, 5.274]
     m = folium.Map(location=map_center, zoom_start=14, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
+    folium.TileLayer('Stamen Terrain', attr='Stamen').add_to(m) if hasattr(folium.TileLayer, 'Stamen') else None
     folium.LayerControl().add_to(m)
     
+    if course_start: folium.PolyLine(locations=course_start, color="green", weight=6).add_to(m)
+    if course_finish: folium.PolyLine(locations=course_finish, color="red", weight=6).add_to(m)
     for idx, mark in enumerate(course_marks):
         folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
@@ -309,14 +305,7 @@ else:
                     col_target = cols[h_idx % len(cols)]
                     mins_disp = heat["time_secs"] // 60
                     secs_disp = heat["time_secs"] % 60
-                    
                     extra_secs = max(0, heat["time_secs"] - int(heat["duration"] * 60))
                     extra_mins = extra_secs // 60
                     extra_secs_rem = extra_secs % 60
-                    
-                    col_target.metric(
-                        label=heat["name"], 
-                        value=f"{mins_disp:02d}:{secs_disp:02d} Total", 
-                        delta=f"+{extra_mins:02d}:{extra_secs_rem:02d} past cap",
-                        delta_color="inverse"
-                    )
+                    col_target.metric(label=heat["name"], value=f"{mins_disp:02d}:{secs_disp:02d} Total", delta=f"+{extra_mins:02d}:{extra_secs_rem:02d} past cap", delta_color="inverse")
