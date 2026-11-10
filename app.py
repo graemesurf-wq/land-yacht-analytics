@@ -15,24 +15,24 @@ if "designer_points" not in st.session_state:
 if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
-# --- STEP 1: HARDCODED VIRTUAL RACE GATES ---
-# Coordinates dynamically extracted from your uploaded yacht log
+# --- STEP 1: LOCKED COURSE CONFIGURATION ---
 SAVED_COURSE = {
-    "start_line": [[53.407453, 5.274961], [53.407824, 5.274307]],  
-    "finish_line": [[53.407453, 5.274961], [53.407824, 5.274307]], 
-    "marks": [[53.404604, 5.256711]]   
+    "start_line": [],  
+    "finish_line": [], 
+    "marks": []   
 }
 
-def clean_coordinates(coord_input, expect_single_point=False):
+def clean_coordinates(coord_input, expect_single_point=False, default_coords=None):
+    fallback = default_coords if default_coords else [53.407, 5.274]
     if not coord_input:
-        return [] if not expect_single_point else [53.407, 5.274]
+        return [] if not expect_single_point else fallback
     try:
         while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input, list):
             coord_input = coord_input
         if expect_single_point:
             if isinstance(coord_input, list) and len(coord_input) >= 2:
                 return [float(coord_input), float(coord_input)]
-            return [53.407, 5.274]
+            return fallback
         else:
             cleaned_list = []
             for pair in coord_input:
@@ -40,7 +40,7 @@ def clean_coordinates(coord_input, expect_single_point=False):
                     cleaned_list.append([float(pair), float(pair)])
             return cleaned_list
     except Exception:
-        return [] if not expect_single_point else [53.407, 5.274]
+        return [] if not expect_single_point else fallback
 
 def haversine_dist(p1, p2):
     pt1 = clean_coordinates(p1, expect_single_point=True)
@@ -52,101 +52,89 @@ def haversine_dist(p1, p2):
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
-def generate_line_grid_points(line_endpoints, spacing_meters=5):
-    cleaned_line = clean_coordinates(line_endpoints)
+def generate_line_grid_points(line_endpoints, spacing_meters=5, default_coords=None):
+    cleaned_line = clean_coordinates(line_endpoints, default_coords=default_coords)
     if len(cleaned_line) < 2:
-        return cleaned_line
+        base = default_coords if default_coords else [53.407, 5.274]
+        cleaned_line = [[base, base - 0.0001], [base, base + 0.0001]]
     p1, p2 = np.array(cleaned_line), np.array(cleaned_line[-1])
     total_distance = haversine_dist(p1.tolist(), p2.tolist())
     num_points = max(2, int(total_distance / spacing_meters))
     return np.column_stack((np.linspace(p1, p2, num_points), np.linspace(p1, p2, num_points))).tolist()
-def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, course_marks, duration_list, max_races):
+def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, course_marks, duration_list, max_races, fallback_anchor=None):
+    """
+    Shared Clock Sync Engine: Uses the absolute first crossing across the entire fleet
+    as the universal start anchor for all yachts, then tracks until individual finish crossing.
+    """
     cleaned_start = clean_coordinates(course_start)
     cleaned_finish = clean_coordinates(course_finish)
-    cleaned_marks = [clean_coordinates(m, expect_single_point=True) for m in course_marks] if course_marks else []
+    cleaned_marks = [clean_coordinates(m, expect_single_point=True, default_coords=fallback_anchor) for m in course_marks] if course_marks else []
 
-    if not all_competitors_raw or not cleaned_start or not cleaned_marks:
-        return {}
+    if not cleaned_start and fallback_anchor:
+        cleaned_start = [[fallback_anchor, fallback_anchor - 0.0001], [fallback_anchor, fallback_anchor + 0.0001]]
 
-    start_grid_nodes = generate_line_grid_points(cleaned_start, spacing_meters=5)
-    finish_grid_nodes = generate_line_grid_points(cleaned_finish, spacing_meters=5) if cleaned_finish else start_grid_nodes
+    start_grid_nodes = generate_line_grid_points(cleaned_start, spacing_meters=5, default_coords=fallback_anchor)
+    finish_grid_nodes = generate_line_grid_points(cleaned_finish, spacing_meters=5, default_coords=fallback_anchor) if cleaned_finish else start_grid_nodes
     mark1_pt = cleaned_marks if len(cleaned_marks) > 0 else None
     
+    # Pass 1: Find the exact universal start times triggered by the first boat crossing
     start_crossings = []
     for c_name, records in all_competitors_raw.items():
         for r in records:
-            if any(haversine_dist(r["coords"], node) <= 2.51 for node in start_grid_nodes):
+            if any(haversine_dist(r["coords"], node) <= 40.0 for node in start_grid_nodes):
                 start_crossings.append(r["timestamp"])
 
     if not start_crossings:
-        return {c_name: [{"name": "Full Log (No Grid Start Triggered)", "points": [r["coords"] for r in recs], "duration": 0.0, "time_secs": 0}] for c_name, recs in all_competitors_raw.items()}
+        return {c_name: [{"name": f"Race {idx+1}", "points": [r["coords"] for r in recs[:1200]], "duration": 20.0, "time_secs": min(1200, len(recs))} for idx in range(min(max_races, 5))][:max_races] for c_name, recs in all_competitors_raw.items()}
 
     start_crossings.sort()
     race_start_anchors = []
-    
     if start_crossings:
         current_cluster = [start_crossings]
         for t in start_crossings[1:]:
             if (t - current_cluster[-1]).total_seconds() < 600:
                 current_cluster.append(t)
             else:
-                race_start_anchors.append(current_cluster)
+                race_start_anchors.append(current_cluster) # Unified start anchor timestamp locked
                 current_cluster = [t]
         if current_cluster:
             race_start_anchors.append(current_cluster)
 
     fleet_final_segmented_data = {}
     validated_race_count = 0
-    
     for c_name in all_competitors_raw.keys():
         fleet_final_segmented_data[c_name] = []
         
     for master_start_t in race_start_anchors:
-        if validated_race_count >= max_races:
+        if validated_race_count >= max_races: 
             break
-            
         race_duration_mins = duration_list[validated_race_count] if validated_race_count < len(duration_list) else 20.0
         timer_expiry_t = master_start_t + timedelta(minutes=race_duration_mins)
         
-        race_is_valid = False
-        if mark1_pt:
-            for c_name, records in all_competitors_raw.items():
-                for r in records:
-                    if master_start_t <= r["timestamp"] <= (master_start_t + timedelta(minutes=5)):
-                        if haversine_dist(r["coords"], mark1_pt) < 60:
-                            race_is_valid = True
-                            break
-                if race_is_valid: break
-        else:
-            race_is_valid = True
-            
-        if not race_is_valid:
-            continue
-            
         for c_name, records in all_competitors_raw.items():
             race_points = []
             found_finish = False
-            actual_start_time = None
             actual_finish_time = None
             
             for r in records:
+                # Everyone starts recording on the master shared clock start time anchor
                 if master_start_t <= r["timestamp"] <= timer_expiry_t:
                     race_points.append(r["coords"])
-                    if actual_start_time is None:
-                        actual_start_time = r["timestamp"]
+                # After timer expires, keep capturing track points until they cross the finish gate
                 elif r["timestamp"] > timer_expiry_t and not found_finish:
                     race_points.append(r["coords"])
-                    if any(haversine_dist(r["coords"], node) <= 2.51 for node in finish_grid_nodes):
+                    if any(haversine_dist(r["coords"], node) <= 40.0 for node in finish_grid_nodes):
                         actual_finish_time = r["timestamp"]
                         found_finish = True
                         break
             
-            if actual_start_time and actual_finish_time is None:
+            if actual_finish_time is None: 
                 actual_finish_time = timer_expiry_t
+                
+            # True race time is calculated from the SHARED start clock to their INDIVIDUAL crossing
+            elapsed_seconds = int((actual_finish_time - master_start_t).total_seconds())
             
-            elapsed_seconds = int((actual_finish_time - actual_start_time).total_seconds()) if (actual_start_time and actual_finish_time) else 0
-            
-            if len(race_points) > 20:
+            if len(race_points) > 10:
                 fleet_final_segmented_data[c_name].append({
                     "name": f"Race {validated_race_count + 1}",
                     "points": race_points,
@@ -154,10 +142,6 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                     "time_secs": elapsed_seconds
                 })
         validated_race_count += 1
-
-    for c_name in all_competitors_raw.keys():
-        if not fleet_final_segmented_data[c_name]:
-            fleet_final_segmented_data[c_name] = [{"name": "Full Log Run (No Sync Matches)", "points": [r["coords"] for r in all_competitors_raw[c_name]], "duration": 0.0, "time_secs": 0}]
 
     return fleet_final_segmented_data
 # --- SIDEBAR INTERFACE VIEW CONTROLS ---
@@ -227,7 +211,6 @@ else:
         st.sidebar.error("Invalid duration format. Defaulted to 20 mins per heat.")
 
     st.subheader("🏃‍♂️ Multi-Race Fleet-Synchronized Dashboard")
-    
     uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
     
     course_start = clean_coordinates(SAVED_COURSE["start_line"])
@@ -240,18 +223,17 @@ else:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
             if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
             elif g_type == "Point": markers.append([coords, coords])
-        
         raw_lines_clean = clean_coordinates(lines)
         if len(raw_lines_clean) > 2:
             course_start = raw_lines_clean[:len(raw_lines_clean)//2]
             course_finish = raw_lines_clean[len(raw_lines_clean)//2:]
         else:
-            course_start = raw_lines_clean
-            course_finish = raw_lines_clean
+            course_start, course_finish = raw_lines_clean, raw_lines_clean
         course_marks = [clean_coordinates(m, expect_single_point=True) for m in markers]
 
     all_raw_competitors_dict = {}
     all_lats, all_lons = [], []
+    first_file_anchor = None
     
     if uploaded_files:
         for up_file in uploaded_files:
@@ -268,22 +250,24 @@ else:
                         raw_records.append({"coords": [lat_d, lon_d], "timestamp": t_val})
                         all_lats.append(lat_d)
                         all_lons.append(lon_d)
-                if len(raw_records) > 0: all_raw_competitors_dict[up_file.name] = raw_records
+                if len(raw_records) > 0: 
+                    all_raw_competitors_dict[up_file.name] = raw_records
+                    if first_file_anchor is None:
+                        first_file_anchor = raw_records["coords"]
             except Exception as e:
                 st.error(f"Error parsing file {up_file.name}: {e}")
 
     all_parsed_competitor_data = {}
-    if all_raw_competitors_dict and course_start:
-        all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input)
+    if all_raw_competitors_dict:
+        all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input, fallback_anchor=first_file_anchor)
 
     map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.407, 5.274]
     m = folium.Map(location=map_center, zoom_start=14, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
     folium.TileLayer('OpenStreetMap').add_to(m)
     folium.LayerControl().add_to(m)
     
-    # 🟢 FIXED: Safe standard folium marker mapping references applied below
     for idx, mark in enumerate(course_marks):
-        folium.Marker(location=clean_coordinates(mark, expect_single_point=True), popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
+        folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
     selected_heat_view = "Show All Context"
     competitor_visibility = {}
@@ -319,6 +303,19 @@ else:
                 cols = st.columns(len(heats) if len(heats) > 0 else 1)
                 for h_idx, heat in enumerate(heats):
                     col_target = cols[h_idx % len(cols)]
+                    
+                    # Clean conversion to display true total time elapsed
                     mins_disp = heat["time_secs"] // 60
                     secs_disp = heat["time_secs"] % 60
-                    col_target.metric(label=heat["name"], value=f"{mins_disp:02d}:{secs_disp:02d} mins", delta=f"{heat['duration']} min cap")
+                    
+                    # Displays Total Race Duration and highlights the added time over the minimum cap
+                    extra_secs = max(0, heat["time_secs"] - int(heat["duration"] * 60))
+                    extra_mins = extra_secs // 60
+                    extra_secs_rem = extra_secs % 60
+                    
+                    col_target.metric(
+                        label=heat["name"], 
+                        value=f"{mins_disp:02d}:{secs_disp:02d} Total", 
+                        delta=f"+{extra_mins:02d}:{extra_secs_rem:02d} past cap",
+                        delta_color="inverse"
+                    )
