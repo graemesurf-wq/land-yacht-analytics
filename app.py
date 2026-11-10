@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 from engine import extract_fit_data
 
 st.set_page_config(page_title="VMC Analyzer", layout="wide")
 st.title("⛵ Land Yacht Course Definer")
-st.markdown("👉 Click directly anywhere on the grid layout relative to the tracks to position your flags and cones.")
+st.markdown("👉 Check the boxes in the list below to assign your Start/Finish gates and course cones.")
 
 # Initialize Core Session Memory Layers
 if 'course_log' not in st.session_state: st.session_state.course_log = {}
@@ -21,14 +20,6 @@ allocated_duration = st.sidebar.selectbox("Duration (Mins)", options=(10, 15, 20
 
 if active_race not in st.session_state.course_log:
     st.session_state.course_log[active_race] = []
-
-if st.sidebar.button("📋 Copy Course from Previous Race"):
-    current_idx = race_options.index(active_race)
-    if current_idx > 0:
-        prev_race = race_options[current_idx - 1]
-        if prev_race in st.session_state.course_log and st.session_state.course_log[prev_race]:
-            st.session_state.course_log[active_race] = list(st.session_state.course_log[prev_race])
-            st.sidebar.success(f"Copied course from {prev_race}!")
 
 st.sidebar.divider()
 st.sidebar.header("📥 Sailor Setup Profile")
@@ -52,53 +43,29 @@ if sailor_name:
     specs["race_weight"] = st.sidebar.slider("Weight (kg)", 60, 110, int(specs["race_weight"]))
 
 # --- SCREEN MAIN LAYOUT AREA ---
-col_map, col_data = st.columns([2.5, 1.5])
+col_list, col_log = st.columns([2.2, 1.8])
 current_markers = st.session_state.course_log[active_race]
 
-with col_map:
-    st.subheader(f"📈 Clickable Arena Canvas - {active_race}")
+with col_list:
+    st.subheader("📋 Interactive Track Telemetry Selector")
     
-    center_lat, center_lon = 51.5074, -0.1278
     if not df_track.empty:
-        center_lat = float(df_track["Lat"].iloc[0])
-        center_lon = float(df_track["Lon"].iloc[0])
-
-    fig = go.Figure()
-    
-    # Layer 1: Plot the raw track path line map vector
-    if not df_track.empty:
-        fig.add_trace(go.Scattermap(
-            lat=df_track["Lat"], lon=df_track["Lon"], mode="lines",
-            line=dict(width=3.5, color="blue"), name="Sailing Line"
-        ))
-
-    # Layer 2: Plot the clicked course markers from state memory
-    if current_markers:
-        df_markers = pd.DataFrame(current_markers)
-        fig.add_trace(go.Scattermap(
-            lat=df_markers["Latitude"], lon=df_markers["Longitude"], mode="markers+text",
-            marker=dict(size=14, color=df_markers["Color"]), text=df_markers["Label"],
-            textposition="top center", name="Marks"
-        ))
-
-    # Clean map-free vector structure that resolves version conflicts completely
-    fig.update_layout(
-        map=dict(
-            style="open-street-map",
-            center=dict(lat=center_lat, lon=center_lon), zoom=14
-        ),
-        margin=dict(r=0, t=0, l=0, b=0), height=500
-    )
-    
-    # Render layout panel widget and capture cursor coordinates directly
-    map_click = st.plotly_chart(fig, use_container_width=True, on_click=True)
-
-    if map_click and map_click.get("points") and map_click["points"].get("map_clicks"):
-        click_data = map_click["points"]["map_clicks"]
-        c_lat = click_data.get("lat")
-        c_lon = click_data.get("lon")
+        st.caption("💡 Scroll and check the box next to any point to assign it as the next sequential mark.")
         
-        if c_lat and c_lon:
+        # Add a selectable column to the track matrix
+        df_track["Assign Mark"] = False
+        
+        # Render Streamlit's native data editor component
+        edited_df = st.data_editor(
+            df_track[["Assign Mark", "Time", "Kph", "Lat", "Lon"]],
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Time", "Kph", "Lat", "Lon"]
+        )
+        
+        # Check if a row checkbox was toggled
+        selected_rows = edited_df[edited_df["Assign Mark"] == True]
+        if len(selected_rows) > 0:
             num_markers = len(current_markers)
             if num_markers < 10:
                 c_num = num_markers + 1
@@ -109,33 +76,30 @@ with col_map:
                 else: lbl, clr = f"Cone {c_num - 4}", "orange"
                 
                 desc = "Gate" if c_num <= 4 else f"Mark Cone {c_num - 4}"
+                target_row = selected_rows.iloc[0]
                 
                 st.session_state.course_log[active_race].append({
                     "Seq ID": c_num, "Description": desc, "Label": lbl,
-                    "Latitude": c_lat, "Longitude": c_lon, "Color": clr
+                    "Latitude": float(target_row["Lat"]), "Longitude": float(target_row["Lon"]), "Color": clr
                 })
                 st.rerun()
+    else:
+        st.info("Awaiting a .fit file upload to load the interactive data list.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("↩️ Undo Last", use_container_width=True):
-            if st.session_state.course_log[active_race]:
-                st.session_state.course_log[active_race].pop()
-                st.rerun()
-    with c2:
-        if st.button("🗑️ Clear Layout", use_container_width=True):
-            st.session_state.course_log[active_race] = []
-            st.rerun()
-
-with col_data:
-    st.subheader("📋 Course Definition Log")
+with col_log:
+    st.subheader("📋 Locked Course Parameters")
     num_markers = len(current_markers)
-    if num_markers == 0: st.info("👉 Click anywhere on the footprint image to place **Start Line Marker A**.")
-    elif num_markers == 1: st.info("👉 Click to place **Start Line Marker B**.")
-    elif num_markers == 2: st.info("👉 Click to place **Finish Line Marker A**.")
-    elif num_markers == 3: st.info("👉 Click to place **Finish Line Marker B**.")
-    elif 4 <= num_markers < 10: st.success(f"Gates locked. Cones left to drop: {10 - num_markers} (Minimum 2 cones needed).")
-    else: st.warning("Maximum capacity reached. Layout locked.")
+    if num_markers == 0: st.info("👉 Check a row to lock **Start Line Marker A**.")
+    elif num_markers == 1: st.info("👉 Check a row to lock **Start Line Marker B**.")
+    elif num_markers == 2: st.info("👉 Check a row to lock **Finish Line Marker A**.")
+    elif num_markers == 3: st.info("👉 Check a row to lock **Finish Line Marker B**.")
+    elif 4 <= num_markers < 10: st.success(f"Gates set. Cones remaining: {10 - num_markers}")
+    else: st.warning("Layout locked.")
+
+    if st.button("↩️ Undo Last Assignment", use_container_width=True):
+        if st.session_state.course_log[active_race]:
+            st.session_state.course_log[active_race].pop()
+            st.rerun()
 
     if current_markers:
         st.dataframe(pd.DataFrame(current_markers)[["Seq ID", "Description", "Latitude", "Longitude"]], use_container_width=True, hide_index=True)
