@@ -1,289 +1,268 @@
-import streamlit as st
-import pandas as pd
+import json
+import os
+
 import folium
+import numpy as np
+import pandas as pd
+import streamlit as st
+from fitparse import FitFile
 from folium.plugins import Draw
 from streamlit_folium import st_folium
-from fitparse import FitFile
-import numpy as np
-from datetime import datetime, timedelta
 
-st.set_page_config(layout="wide", page_title="Land Yacht Sync Engine")
-st.title("🏁 Fleet-Synchronized Land Yacht Analyst")
+COURSE_FILE = "course.json"
+DEFAULT_CENTER = [53.407453, 5.274961]
+COLORS = ["cyan", "yellow", "magenta", "lime", "orange", "pink", "white", "gold"]
 
-# --- INITIALIZE ALL MEMORY STATES FIRST TO PREVENT KEYERRORS ---
-if "designer_points" not in st.session_state:
-    st.session_state["designer_points"] = []
-if "saved_raw_drawings" not in st.session_state:
-    st.session_state["saved_raw_drawings"] = None
+st.set_page_config(layout="wide", page_title="Land Yacht Race Analyst")
+st.title("🏁 Land Yacht Race Analyst")
 
-# Empty template block - live tab memory handles everything dynamically
-SAVED_COURSE = {
-    "start_pin": [],  
-    "finish_pin": [], 
-    "marks": []   
-}
 
-def clean_coordinates(coord_input, default_coords=None):
-    fallback = default_coords if default_coords else [53.407453, 5.274961]
-    if not coord_input:
-        return fallback
-    try:
-        while isinstance(coord_input, list) and len(coord_input) == 1:
-            coord_input = coord_input
-        if isinstance(coord_input, list) and len(coord_input) >= 2:
-            return [float(coord_input[0]), float(coord_input[1])]
-        return fallback
-    except Exception:
-        return fallback
+# ---------------------------------------------------------------- helpers
+def hav(lat, lon, plat, plon):
+    """Vectorised haversine distance in metres from arrays to one point."""
+    R = 6371000.0
+    p1, p2 = np.radians(lat), np.radians(plat)
+    dphi = p2 - p1
+    dlon = np.radians(plon - lon)
+    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
-def haversine_dist(p1, p2):
-    pt1 = clean_coordinates(p1)
-    pt2 = clean_coordinates(p2)
-    R = 6371000
-    phi1, phi2 = np.radians(pt1[0]), np.radians(pt2[0])
-    dphi = np.radians(pt2[0] - pt1[0])
-    dlon = np.radians(pt2[1] - pt1[1])
-    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-def advanced_first_boat_sync(all_competitors_raw, start_pin, finish_pin, course_marks, duration_list, max_races, fallback_anchor=None):
-    st_pin = clean_coordinates(start_pin, default_coords=fallback_anchor)
-    fn_pin = clean_coordinates(finish_pin, default_coords=fallback_anchor) if finish_pin else st_pin
-    c_marks = [clean_coordinates(m, default_coords=fallback_anchor) for m in course_marks] if course_marks else []
 
-    last_mark_pt = c_marks[-1] if len(c_marks) > 0 else None
+@st.cache_data(show_spinner=False)
+def load_fit(data: bytes) -> pd.DataFrame:
+    rows = []
+    for r in FitFile(data).get_messages("record"):
+        lat, lon, t = r.get_value("position_lat"), r.get_value("position_long"), r.get_value("timestamp")
+        if lat is not None and lon is not None and t is not None:
+            rows.append((t, lat * 180.0 / 2**31, lon * 180.0 / 2**31))
+    df = pd.DataFrame(rows, columns=["t", "lat", "lon"]).sort_values("t").reset_index(drop=True)
+    return df
 
-    movement_triggers = []
-    for records in all_competitors_raw.values():
-        for idx in range(1, len(records)):
-            p1 = records[idx-1]
-            p2 = records[idx]
-            
-            dist_moved = haversine_dist(p1["coords"], p2["coords"])
-            time_diff = (p2["timestamp"] - p1["timestamp"]).total_seconds()
-            speed_kmh = (dist_moved / time_diff) * 3.6 if time_diff > 0 else 0
-            
-            if speed_kmh > 0.5:
-                movement_triggers.append(p2["timestamp"])
 
-    if not movement_triggers:
-        return {c_name: [{"name": f"Race {idx+1}", "points": [r["coords"] for r in recs[:800]], "duration": 20.0, "time_secs": len(recs)//5} for idx in range(min(max_races, 3))] for c_name, recs in all_competitors_raw.items()}
+def load_course():
+    if os.path.exists(COURSE_FILE):
+        try:
+            with open(COURSE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"start": None, "finish": None, "marks": []}
 
-    movement_triggers.sort()
-    race_start_anchors = []
-    
-    if movement_triggers:
-        current_cluster = [movement_triggers[0]]
-        for t in movement_triggers[1:]:
-            if (t - current_cluster[-1]).total_seconds() < 600:
-                current_cluster.append(t)
-            else:
-                potential_t0 = current_cluster[0]
-                gate_validated = False
-                
-                for records in all_competitors_raw.values():
-                    for r in records:
-                        if potential_t0 <= r["timestamp"] <= (potential_t0 + timedelta(minutes=2.5)):
-                            if haversine_dist(r["coords"], st_pin) <= 100.0:
-                                gate_validated = True
-                                break
-                    if gate_validated: break
-                
-                race_start_anchors.append(potential_t0)
-                current_cluster = [t]
-        if current_cluster and len(race_start_anchors) < max_races:
-            race_start_anchors.append(current_cluster[0])
 
-    fleet_final_data = {}
-    validated_race_count = 0
-    for c_name in all_competitors_raw.keys():
-        fleet_final_data[c_name] = []
-        
-    for master_start_t in race_start_anchors:
-        if validated_race_count >= max_races: break
-        race_duration_mins = duration_list[validated_race_count] if validated_race_count < len(duration_list) else 20.0
-        timer_expiry_t = master_start_t + timedelta(minutes=race_duration_mins)
-        
-        for c_name, records in all_competitors_raw.items():
-            race_points = []
-            found_finish = False
-            has_rounded_last_mark = False
-            actual_finish_time = None
-            
-            for r in records:
-                if master_start_t <= r["timestamp"] <= timer_expiry_t:
-                    race_points.append(r["coords"])
-                    if last_mark_pt and haversine_dist(r["coords"], last_mark_pt) <= 60.0:
-                        has_rounded_last_mark = True
-                        
-                elif r["timestamp"] > timer_expiry_t and not found_finish:
-                    race_points.append(r["coords"])
-                    if last_mark_pt and haversine_dist(r["coords"], last_mark_pt) <= 60.0:
-                        has_rounded_last_mark = True
-                        
-                    if has_rounded_last_mark or not last_mark_pt:
-                        if haversine_dist(r["coords"], fn_pin) <= 50.0:
-                            actual_finish_time = r["timestamp"]
-                            found_finish = True
-                            break
-            
-            if actual_finish_time is None: actual_finish_time = timer_expiry_t
-            elapsed_seconds = int((actual_finish_time - master_start_t).total_seconds())
-            
-            if len(race_points) > 10:
-                fleet_final_data[c_name].append({
-                    "name": f"Race {validated_race_count + 1}",
-                    "points": race_points[::3],
-                    "duration": race_duration_mins,
-                    "time_secs": elapsed_seconds
-                })
-        validated_race_count += 1
+def drawings_to_course(drawings):
+    # Leaflet/GeoJSON gives [lon, lat]; we store [lat, lon].
+    pts = [[d["geometry"]["coordinates"][1], d["geometry"]["coordinates"][0]]
+           for d in drawings if d["geometry"]["type"] == "Point"]
+    return {
+        "start": pts[0] if len(pts) >= 1 else None,
+        "finish": pts[1] if len(pts) >= 2 else None,
+        "marks": pts[2:],
+    }
 
-    return fleet_final_data
-# --- DESIGNER MODE CONTROLS ---
-st.sidebar.header("Mode Selection")
-app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare Tracks)", "Designer Mode (Create/Edit Course Layout)"])
 
-if app_mode == "Designer Mode (Create/Edit Course Layout)":
-    st.subheader("🛠️ Course Designer Mode")
-    st.markdown("ℹ️ **Drawing Instructions:** Drop **Pins** (Markers) onto the map layout: \n1. First Pin = **Start Gate center** \n2. Second Pin = **Finish Gate center** \n3. Subsequent Pins = **Marks 1, 2, 3, etc.**")
-    
-    uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"], key="designer_uploader")
-    if uploaded_file:
-        pts = []
-        fitfile = FitFile(uploaded_file.read())
-        for r in fitfile.get_messages("record"):
-            lat = r.get_value("position_lat")
-            lon = r.get_value("position_long")
-            if lat and lon: pts.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
-        st.session_state["designer_points"] = pts[::4]
-                
-    active_points = st.session_state["designer_points"]
-    center = [pd.DataFrame(active_points, columns=["lat", "lon"])["lat"].mean(), pd.DataFrame(active_points, columns=["lat", "lon"])["lon"].mean()] if active_points else [53.407453, 5.274961]
-    
-    lock_course = st.sidebar.checkbox("🔒 Lock Course Setup & View Layout", value=False)
-    m = folium.Map(location=center, zoom_start=14, tiles="OpenStreetMap")
-    
-    if active_points:
-        folium.PolyLine(locations=active_points, color="white", weight=2, opacity=0.4).add_to(m)
-        
-    if not lock_course:
-        draw_tool = Draw(position='topleft', draw_options={'polyline': False, 'marker': True, 'circle': False, 'rectangle': False, 'polygon': False, 'circlemarker': False})
-        draw_tool.add_to(m)
-        map_output = st_folium(m, width=900, height=500, key="designer_draw_map", returned_objects=["all_drawings"])
-        if map_output and map_output.get("all_drawings"):
-            st.session_state["saved_raw_drawings"] = map_output["all_drawings"]
-    else:
-        user_drawings = st.session_state["saved_raw_drawings"]
-        markers = []
-        if user_drawings:
-            for item in user_drawings:
-                if item['geometry']['type'] == "Point":
-                    markers.append(item['geometry']['coordinates'])
-        
-        if len(markers) >= 1:
-            folium.Marker(location=clean_coordinates(markers[0]), popup="🟢 START ANCHOR", icon=folium.Icon(color="green", icon="play")).add_to(m)
-            folium.Circle(location=clean_coordinates(markers[0]), radius=100, color="green", fill=True, opacity=0.12).add_to(m)
-        if len(markers) >= 2:
-            folium.Marker(location=clean_coordinates(markers[1]), popup="🏁 FINISH ANCHOR", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
-            folium.Circle(location=clean_coordinates(markers[1]), radius=50, color="red", fill=True, opacity=0.12).add_to(m)
-        for idx, mk in enumerate(markers[2:]):
-            folium.Marker(location=clean_coordinates(mk), popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
-            
-        st_folium(m, width=900, height=500, key="designer_view_map", returned_objects=[])
+def fmt(secs):
+    secs = int(round(secs))
+    return f"{secs // 60:02d}:{secs % 60:02d}"
+
+
+# ------------------------------------------------------- race detection
+def detect_races(df, course, r_start, r_mark, r_fin, max_min):
+    """Find each time a boat leaves the start zone, rounds every mark in order
+    and reaches the finish. Returns a list of per-boat race attempts."""
+    lat, lon = df["lat"].to_numpy(), df["lon"].to_numpy()
+    t = (df["t"] - df["t"].iloc[0]).dt.total_seconds().to_numpy()
+
+    d_start = hav(lat, lon, *course["start"])
+    d_fin = hav(lat, lon, *course["finish"])
+    d_marks = [hav(lat, lon, *m) for m in course["marks"]]
+    n_marks = len(d_marks)
+
+    # Direction of travel for a valid start: towards the first mark (or finish if no marks)
+    d_first = d_marks[0] if n_marks else d_fin
+    first_pt = course["marks"][0] if n_marks else course["finish"]
+    line_to_first = hav(np.array([course["start"][0]]), np.array([course["start"][1]]), *first_pt)[0]
+
+    attempts = []
+    active, last_in_start, start_i, next_mark = False, None, 0, 0
+
+    for i in range(len(t)):
+        if not active:
+            if d_start[i] <= r_start:
+                last_in_start = i  # still sailing around the start area
+            elif last_in_start is not None and t[i] - t[last_in_start] <= 30:
+                # Left the start area. It only counts as a start if it left on the
+                # first-mark side of the line (beside the line is fine, behind it is not).
+                if d_first[i] <= line_to_first + 0.25 * r_start:
+                    active, start_i, next_mark = True, last_in_start, 0
+                last_in_start = None
+            continue
+
+        # on course
+        if next_mark == 0 and d_start[i] <= r_start:
+            active, last_in_start = False, i  # went back to the line: not racing yet
+            continue
+        if next_mark < n_marks and d_marks[next_mark][i] <= r_mark:
+            next_mark += 1
+        if next_mark == n_marks and d_fin[i] <= r_fin:
+            attempts.append((start_i, i, True))
+            active = False
+        elif t[i] - t[start_i] > max_min * 60:
+            if next_mark > 0:
+                attempts.append((start_i, i, False))
+            active = False
+
+    out = []
+    base = df["t"].iloc[0]
+    for s, e, ok in attempts:
+        out.append({
+            "start_time": base + pd.to_timedelta(t[s], unit="s"),
+            "end_time": base + pd.to_timedelta(t[e], unit="s"),
+            "secs": t[e] - t[s],
+            "finished": ok,
+            "points": df.iloc[s:e + 1][["lat", "lon"]].to_numpy()[::2].tolist(),
+        })
+    return out
+
+
+def number_races(per_boat, gap_min):
+    """Group attempts from all boats into fleet races by start time."""
+    flat = [(b, a) for b, atts in per_boat.items() for a in atts]
+    flat.sort(key=lambda x: x[1]["start_time"])
+    race_no, last_t = 0, None
+    for b, a in flat:
+        if last_t is None or (a["start_time"] - last_t).total_seconds() > gap_min * 60:
+            race_no += 1
+        a["race"] = race_no
+        last_t = a["start_time"]
+    return flat
+
+
+# ----------------------------------------------------------------- sidebar
+mode = st.sidebar.radio("Mode", ["Racer (analyse tracks)", "Designer (set up course)"])
+
+# ---------------------------------------------------------------- designer
+if mode.startswith("Designer"):
+    st.subheader("🛠️ Course Designer")
+    st.markdown("Drop pins in order: **1 = Start, 2 = Finish, 3+ = Marks** (in rounding order), then save.")
+
+    ref = st.file_uploader("Optional: reference .fit track", type=["fit"])
+    center, track = DEFAULT_CENTER, None
+    if ref:
+        track = load_fit(ref.getvalue())
+        if len(track):
+            center = [track["lat"].mean(), track["lon"].mean()]
+
+    m = folium.Map(location=center, zoom_start=14)
+    if track is not None and len(track):
+        folium.PolyLine(track[["lat", "lon"]].to_numpy()[::4].tolist(), color="gray", weight=2, opacity=0.5).add_to(m)
+    Draw(position="topleft", draw_options={k: False for k in
+         ["polyline", "circle", "rectangle", "polygon", "circlemarker"]} | {"marker": True}).add_to(m)
+
+    out = st_folium(m, width=900, height=500, key="designer", returned_objects=["all_drawings"])
+    drawings = (out or {}).get("all_drawings") or []
+    course = drawings_to_course(drawings)
+    st.write(f"Pins placed: start {'✅' if course['start'] else '❌'}, "
+             f"finish {'✅' if course['finish'] else '❌'}, marks: {len(course['marks'])}")
+
+    if st.button("💾 Save course", disabled=not (course["start"] and course["finish"])):
+        with open(COURSE_FILE, "w") as f:
+            json.dump(course, f)
+        st.success("Course saved. Switch to Racer mode.")
+
+# ------------------------------------------------------------------- racer
 else:
-    # --- RACER MODE ---
-    st.sidebar.header("🏁 Analytics Configuration")
-    max_races_input = st.sidebar.slider("Maximum number of races to scan for:", min_value=1, max_value=8, value=5)
-    
-    durations_raw = st.sidebar.text_input("Race Durations in Minutes (comma separated):", value="15, 20, 15, 15, 10")
-    try:
-        parsed_durations = [float(d.strip()) for d in durations_raw.split(",")]
-    except:
-        parsed_durations = [20.0] * max_races_input
+    st.sidebar.header("Detection settings")
+    r_start = st.sidebar.slider("Start zone radius (m)", 20, 300, 100)
+    r_mark = st.sidebar.slider("Mark rounding radius (m)", 10, 150, 60)
+    r_fin = st.sidebar.slider("Finish zone radius (m)", 10, 150, 50)
+    max_min = st.sidebar.number_input("Max minutes on course (time cap)", 5, 90, 30)
+    gap_min = st.sidebar.number_input("Starts within N minutes = same race", 1, 30, 4)
+    time_basis = st.sidebar.radio("Time on course measured from",
+                                  ["Boat's own start", "First boat's start in that race"])
 
-    st.subheader("🏃‍♂️ Multi-Race Fleet-Synchronized Dashboard")
-    uploaded_files = st.file_uploader("Upload competitor .fit track files", type=["fit"], accept_multiple_files=True, key="racer_uploader")
-    
-    course_start, course_finish, course_marks = [], [], []
-    if st.session_state["saved_raw_drawings"]:
-        raw_markers = []
-        for item in st.session_state["saved_raw_drawings"]:
-            if item['geometry']['type'] == "Point":
-                raw_markers.append(item['geometry']['coordinates'])
-        
-        if len(raw_markers) >= 1: course_start = clean_coordinates(raw_markers[0])
-        if len(raw_markers) >= 2: course_finish = clean_coordinates(raw_markers[1])
-        if len(raw_markers) > 2: course_marks = [clean_coordinates(m) for m in raw_markers[2:]]
+    course = load_course()
+    if not (course["start"] and course["finish"]):
+        st.info("No saved course yet. Use Designer mode to place start, finish and marks first.")
+        st.stop()
 
-    all_raw_competitors_dict = {}
-    all_lats, all_lons = [], []
-    first_file_anchor = None
-    
-    if uploaded_files:
-        for up_file in uploaded_files:
-            raw_records = []
-            try:
-                fitfile = FitFile(up_file.read())
-                for idx, record in enumerate(fitfile.get_messages("record")):
-                    if idx % 3 != 0: continue 
-                    lat = record.get_value("position_lat")
-                    lon = record.get_value("position_long")
-                    t_val = record.get_value("timestamp")
-                    if lat and lon and t_val:
-                        lat_d = lat * (180.0 / 2**31)
-                        lon_d = lon * (180.0 / 2**31)
-                        raw_records.append({"coords": [lat_d, lon_d], "timestamp": t_val})
-                        all_lats.append(lat_d)
-                        all_lons.append(lon_d)
-                if len(raw_records) > 0: 
-                    all_raw_competitors_dict[up_file.name] = raw_records
-                    if first_file_anchor is None:
-                        first_file_anchor = raw_records[0]["coords"]
-            except Exception as e:
-                st.error(f"Error parsing file: {e}")
+    files = st.file_uploader("Upload competitor .fit files", type=["fit"], accept_multiple_files=True)
+    if not files:
+        st.stop()
 
-    all_parsed_competitor_data = advanced_first_boat_sync(all_raw_competitors_dict, course_start, course_finish, course_marks, parsed_durations, max_races_input, fallback_anchor=first_file_anchor)
+    per_boat, all_pts = {}, []
+    for f in files:
+        try:
+            df = load_fit(f.getvalue())
+            if len(df) < 10:
+                st.warning(f"{f.name}: no usable GPS data")
+                continue
+            per_boat[f.name] = detect_races(df, course, r_start, r_mark, r_fin, max_min)
+            all_pts.append(df[["lat", "lon"]].mean().tolist())
+        except Exception as e:
+            st.error(f"{f.name}: {e}")
 
-    map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)] if all_lats else [53.407453, 5.274961]
-    m = folium.Map(location=map_center, zoom_start=14, tiles="OpenStreetMap")
-    
-    if course_start:
-        folium.Marker(location=course_start, popup="🟢 START ANCHOR", icon=folium.Icon(color="green", icon="play")).add_to(m)
-        folium.Circle(location=course_start, radius=100, color="green", fill=True, opacity=0.12).add_to(m)
-    if course_finish:
-        folium.Marker(location=course_finish, popup="🏁 FINISH ANCHOR", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
-        folium.Circle(location=course_finish, radius=50, color="red", fill=True, opacity=0.12).add_to(m)
-    for idx, mark in enumerate(course_marks):
-        folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
+    flat = number_races(per_boat, gap_min)
+    if not flat:
+        st.warning("No races found. Try bigger zone radii, a longer time cap, or check pin placement in Designer mode.")
+        st.stop()
 
-    selected_heat_view = "Show All Context"
-    competitor_visibility = {}
-    
-    if all_parsed_competitor_data:
-        max_len = max([len(h) for h in all_parsed_competitor_data.values()]) if all_parsed_competitor_data else 1
-        selected_heat_view = st.sidebar.selectbox("Select a race event:", ["Show All Context"] + [f"Race {i+1}" for i in range(max_len)])
-        for c_name in all_parsed_competitor_data.keys():
-            competitor_visibility[c_name] = st.sidebar.checkbox(f"Display {c_name}", value=True)
+    n_races = max(a["race"] for _, a in flat)
 
-    competitor_colors = ["cyan", "yellow", "magenta", "lime", "orange", "pink", "white", "gold"]
-    for c_idx, (c_name, heats) in enumerate(all_parsed_competitor_data.items()):
-        if not competitor_visibility.get(c_name, True): continue
-        c_color = competitor_colors[c_idx % len(competitor_colors)]
-        for heat in heats:
-            if selected_heat_view == "Show All Context" or selected_heat_view == heat["name"]:
-                folium.PolyLine(locations=heat["points"], color=c_color, weight=4, opacity=0.85).add_to(m)
+    # Boats that start beside the line start later than those on it, so offer both timings.
+    first_start = {}
+    for _, a in flat:
+        first_start[a["race"]] = min(first_start.get(a["race"], a["start_time"]), a["start_time"])
+    for _, a in flat:
+        a["delay"] = (a["start_time"] - first_start[a["race"]]).total_seconds()
+        if time_basis.startswith("First"):
+            a["secs"] = (a["end_time"] - first_start[a["race"]]).total_seconds()
 
-    st_folium(m, width=900, height=500, key="racer_map_widget", returned_objects=[])
-    
-    if all_parsed_competitor_data:
-        st.markdown("### 🏆 Segmented Race Diagnostics Analytics Matrix")
-        for c_name, heats in all_parsed_competitor_data.items():
-            if not competitor_visibility.get(c_name, True): continue
-            with st.expander(f"📋 Telemetry Profiles: {c_name}"):
-                cols = st.columns(len(heats) if len(heats) > 0 else 1)
-                for h_idx, heat in enumerate(heats):
-                    col_target = cols[h_idx % len(cols)]
-                    mins_disp = heat["time_secs"] // 60
-                    secs_disp = heat["time_secs"] % 60
-                    extra_secs = max(0, heat["time_secs"] - int(heat["duration"] * 60))
-                    col_target.metric(label=heat["name"], value=f"{mins_disp:02d}:{secs_disp:02d} Total", delta=f"+{extra_secs // 60:02d}:{extra_secs % 60:02d} past cap", delta_color="inverse")
+    # --- time-on-course table (boats x races)
+    rows = {}
+    for b, a in flat:
+        label = fmt(a["secs"]) + ("" if a["finished"] else " (DNF)")
+        rows.setdefault(b, {})[f"Race {a['race']}"] = label
+    table = pd.DataFrame(rows).T.reindex(columns=[f"Race {i}" for i in range(1, n_races + 1)]).fillna("–")
+    totals = {}
+    for b, a in flat:
+        if a["finished"]:
+            totals[b] = totals.get(b, 0) + a["secs"]
+    table["Total (finished)"] = [fmt(totals[b]) if b in totals else "–" for b in table.index]
+
+    st.subheader("⏱️ Time on course")
+    st.dataframe(table, use_container_width=True)
+
+    starts = pd.DataFrame([{"Race": a["race"], "Start": a["start_time"]} for _, a in flat]
+                          ).groupby("Race")["Start"].min()
+    st.caption("Fleet race start times (earliest boat): " +
+               ", ".join(f"Race {r}: {s:%H:%M:%S}" for r, s in starts.items()))
+
+    with st.expander("Start delay behind the first boat in each race"):
+        delay_rows = {}
+        for b, a in flat:
+            delay_rows.setdefault(b, {})[f"Race {a['race']}"] = fmt(a["delay"])
+        st.dataframe(pd.DataFrame(delay_rows).T.reindex(
+            columns=[f"Race {i}" for i in range(1, n_races + 1)]).fillna("–"), use_container_width=True)
+
+    # --- map
+    choice = st.sidebar.selectbox("Show on map", ["All races"] + [f"Race {i}" for i in range(1, n_races + 1)])
+    boats = list(per_boat.keys())
+    visible = {b: st.sidebar.checkbox(b, value=True) for b in boats}
+
+    center = np.mean(all_pts, axis=0).tolist() if all_pts else DEFAULT_CENTER
+    m = folium.Map(location=center, zoom_start=14)
+    folium.Marker(course["start"], popup="Start", icon=folium.Icon(color="green", icon="play")).add_to(m)
+    folium.Circle(course["start"], radius=r_start, color="green", fill=True, opacity=0.12).add_to(m)
+    folium.Marker(course["finish"], popup="Finish", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+    folium.Circle(course["finish"], radius=r_fin, color="red", fill=True, opacity=0.12).add_to(m)
+    for i, mk in enumerate(course["marks"]):
+        folium.Marker(mk, popup=f"Mark {i + 1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
+
+    for b, a in flat:
+        if not visible[b] or choice not in ("All races", f"Race {a['race']}"):
+            continue
+        color = COLORS[boats.index(b) % len(COLORS)]
+        folium.PolyLine(a["points"], color=color, weight=4, opacity=0.85,
+                        tooltip=f"{b} – Race {a['race']} – {fmt(a['secs'])}").add_to(m)
+
+    st_folium(m, width=1000, height=550, key="racer_map", returned_objects=[])
