@@ -6,125 +6,134 @@ from streamlit_folium import st_folium
 from fitparse import FitFile
 
 st.set_page_config(layout="wide")
-st.title("🗺️ Interactive Course Designer")
-st.markdown("Use the drawing toolbar on the left side of the map to physically click and place your Start Line, Finish Line, and course markers directly on top of your track!")
+st.title("🏁 Shared Race Course & Multi-Track Viewer")
 
-# 1. File Uploader
-uploaded_file = st.file_uploader("Upload your track (.fit file)", type=["fit"])
+# --- STEP 1: DEFINE YOUR FIXED SAVED COURSE HERE ---
+# After you draw your course once in "Designer Mode", copy the printed coordinates from the app 
+# and paste them into these variables below so they are locked for all future visitors.
+SAVED_COURSE = {
+    "start_line": [[53.4612, 9.9815], [53.4615, 9.9825]],  # Example Coordinates (Replace these!)
+    "finish_line": [[53.4650, 9.9880], [53.4652, 9.9890]], # Example Coordinates (Replace these!)
+    "marks": [
+        [53.4625, 9.9840],  # Mark 1
+        [53.4635, 9.9860],  # Mark 2
+        [53.4645, 9.9850]   # Mark 3
+    ]
+}
 
-if uploaded_file is not None:
-    fitfile = FitFile(uploaded_file.read())
+# --- SIDEBAR ROLE SELECTION ---
+st.sidebar.header("Mode Selection")
+app_mode = st.sidebar.radio("Choose App Role:", ["Racer Mode (Upload & Compare Tracks)", "Designer Mode (Create/Edit Course Layout)"])
+
+if app_mode == "Designer Mode (Create/Edit Course Layout)":
+    st.subheader("🛠️ Course Designer Mode")
+    st.markdown("1. Upload a reference `.fit` file to view the geography.\n2. Use the map drawing tools to draw your **Start Line** (1st line), **Finish Line** (2nd line), and **2-6 Turn Marks** (Pins).\n3. Copy the generated code from the sidebar and paste it into your `app.py` script on GitHub to save it permanently!")
     
-    # Extract GPS points from .fit file
+    uploaded_file = st.file_uploader("Upload reference .fit file", type=["fit"])
     points = []
-    for record in fitfile.get_messages("record"):
-        lat = record.get_value("position_lat")
-        lon = record.get_value("position_long")
-        if lat and lon:
-            lat_deg = lat * (180.0 / 2**31)
-            lon_deg = lon * (180.0 / 2**31)
-            points.append((lat_deg, lon_deg))
-            
-    if len(points) > 0:
-        df = pd.DataFrame(points, columns=["lat", "lon"])
-        center_lat = df["lat"].mean()
-        center_lon = df["lon"].mean()
-        
-        # 2. Initialize Base Map
-        m = folium.Map(
-            location=[center_lat, center_lon], 
-            zoom_start=15, 
-            tiles="https://arcgisonline.com{z}/{y}/{x}",
-            attr="Esri World Imagery"
-        )
-        folium.TileLayer('OpenStreetMap').add_to(m)
-        folium.LayerControl().add_to(m)
-
-        # 3. Draw the background raw track file
-        folium.PolyLine(
-            locations=points,
-            color="cyan",
-            weight=4,
-            opacity=0.7,
-            tooltip="Raw GPS Track"
-        ).add_to(m)
-        
-        # 4. Add the Interactive Drawing Toolbar
-        # We configure it to allow drawing Polylines (for lines) and Markers (for waypoints)
-        draw_tool = Draw(
-            export=False,
-            position='topleft',
-            draw_options={
-                'polyline': {
-                    'shapeOptions': {
-                        'color': '#3388ff',
-                        'weight': 5
-                    }
-                },
-                'marker': True,
-                'circle': False,
-                'rectangle': False,
-                'polygon': False,
-                'circlemarker': False
-            }
-        )
-        draw_tool.add_to(m)
-        
-        # 5. Render Map and Capture User Drawings
-        # We tell st_folium to return "all_drawings" when the user interacts
-        map_output = st_folium(m, width=1100, height=650, returned_objects=["all_drawings"])
-        
-        # 6. Parse and Categorize User-Dropped Elements
-        user_drawings = map_output.get("all_drawings") if map_output else None
-        
-        if user_drawings:
-            st.markdown("---")
-            st.subheader("📋 Map Objects Placed")
-            
-            lines = []
-            markers = []
-            
-            for item in user_drawings:
-                geometry_type = item['geometry']['type']
-                coordinates = item['geometry']['coordinates']
+    if uploaded_file:
+        fitfile = FitFile(uploaded_file.read())
+        for record in fitfile.get_messages("record"):
+            lat = record.get_value("position_lat")
+            lon = record.get_value("position_long")
+            if lat and lon:
+                points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
                 
-                if geometry_type == "LineString":
-                    # Folium returns coordinates as [lon, lat], we swap them to [lat, lon]
-                    swapped_coords = [[pt[1], pt[0]] for pt in coordinates]
-                    lines.append(swapped_coords)
-                elif geometry_type == "Point":
-                    # Single point coordinate [lon, lat] -> [lat, lon]
-                    markers.append([coordinates[1], coordinates[0]])
-            
-            # Display configuration summary dynamically based on what they draw
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write(f"**Lines Drawn ({len(lines)}):**")
-                for idx, line in enumerate(lines):
-                    if idx == 0:
-                        st.success(f"🟢 **Start Line Defined** (Ends at: {round(line[0][0],4)}, {round(line[0][1],4)} to {round(line[-1][0],4)}, {round(line[-1][1],4)})")
-                    elif idx == 1:
-                        st.danger(f"🏁 **Finish Line Defined** (Ends at: {round(line[0][0],4)}, {round(line[0][1],4)} to {round(line[-1][0],4)}, {round(line[-1][1],4)})")
-                    else:
-                        st.warning(f"➖ Extra Line {idx+1}")
-                        
-            with col2:
-                st.write(f"**Course Markers Dropped ({len(markers)}):**")
-                if 2 <= len(markers) <= 6:
-                    st.success(f"✅ Active Course Marks: **{len(markers)}** (Valid 2-6 range)")
-                elif len(markers) < 2:
-                    st.info(f"💡 Place at least **{2 - len(markers)} more marker(s)** to reach your minimum turn goal.")
-                else:
-                    st.error(f"⚠️ You have placed **{len(markers)}** markers. (Max limit is 6 for your setup)")
-                    
-                for idx, marker in enumerate(markers):
-                    st.write(f"📍 Mark {idx+1}: `{round(marker[0], 5)}, {round(marker[1], 5)}`")
-                    
-        else:
-            st.sidebar.info("💡 **How to design your course:**\n1. Click the Line tool (🛠️) on the map to click-and-draw your **Start Line**.\n2. Draw a second line for your **Finish Line**.\n3. Click the Marker icon to drop your **2 to 6 turn points**.")
-            
-    else:
-        st.error("Could not parse coordinates from this FIT file.")
+    # Center map on track data if available, else standard fallback
+    center = [points[0][0], points[0][1]] if points else [53.46, 9.98]
+    
+    m = folium.Map(location=center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
+    if points:
+        folium.PolyLine(locations=points, color="white", weight=3, opacity=0.5, tooltip="Reference Track").add_to(m)
+        
+    # Inject Drawing controls
+    draw_tool = Draw(position='topleft', draw_options={'polyline': {'shapeOptions': {'color': '#00ffcc', 'weight': 5}}, 'marker': True, 'circle': False, 'rectangle': False, 'polygon': False, 'circlemarker': False})
+    draw_tool.add_to(m)
+    
+    map_output = st_folium(m, width=1100, height=600, returned_objects=["all_drawings"])
+    user_drawings = map_output.get("all_drawings") if map_output else None
+    
+    if user_drawings:
+        lines = []
+        markers = []
+        for item in user_drawings:
+            g_type = item['geometry']['type']
+            coords = item['geometry']['coordinates']
+            if g_type == "LineString":
+                lines.append([[pt[1], pt[0]] for pt in coords]) # Map expects [lat, lon]
+            elif g_type == "Point":
+                markers.append([coords[1], coords[0]])
+                
+        # Generate configuration block text for the user to copy paste
+        st.sidebar.markdown("### 📋 Copy-Paste Configuration Block")
+        st.sidebar.markdown("Copy this block and replace lines 13-23 in your `app.py` file code:")
+        
+        config_text = f"""```python
+SAVED_COURSE = {{
+    "start_line": {lines[:1][0] if len(lines) >= 1 else []},
+    "finish_line": {lines[1:2][0] if len(lines) >= 2 else []},
+    "marks": {markers}
+}}
+```"""
+        st.sidebar.markdown(config_text)
+        
+        # UI Validation warnings
+        if len(lines) < 2: st.warning(f"Please draw both a Start Line and Finish Line. Currently have: {len(lines)} lines.")
+        if not (2 <= len(markers) <= 6): st.warning(f"Please place between 2 and 6 turn marks. Currently have: {len(markers)} marks.")
+
 else:
-    st.info("Upload a `.fit` file to view your background map track and activate the drawing toolkit.")
+    # --- RACER MODE ---
+    st.subheader("🏃‍♂️ Racer Track Uploader")
+    st.markdown("The course layout is locked below. Upload your activity `.fit` file from today's session to see how well you matched the official race boundaries!")
+    
+    uploaded_file = st.file_uploader("Upload your .fit track file", type=["fit"])
+    
+    # Initialize Map around the saved course start line
+    map_center = SAVED_COURSE["start_line"][0] if SAVED_COURSE["start_line"] else [53.46, 9.98]
+    m = folium.Map(location=map_center, zoom_start=15, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri World Imagery")
+    folium.TileLayer('OpenStreetMap').add_to(m)
+    folium.LayerControl().add_to(m)
+    
+    # Render Locked Start Line
+    if SAVED_COURSE["start_line"]:
+        folium.PolyLine(locations=SAVED_COURSE["start_line"], color="green", weight=7, opacity=0.9, tooltip="Official Start Line").add_to(m)
+        folium.Marker(location=SAVED_COURSE["start_line"][0], popup="🟢 START LINE", icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
+        
+    # Render Locked Finish Line
+    if SAVED_COURSE["finish_line"]:
+        folium.PolyLine(locations=SAVED_COURSE["finish_line"], color="red", weight=7, opacity=0.9, tooltip="Official Finish Line").add_to(m)
+        folium.Marker(location=SAVED_COURSE["finish_line"][0], popup="🏁 FINISH LINE", icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa")).add_to(m)
+        
+    # Render Locked Turning Marks
+    colors = ["orange", "purple", "blue", "cadetblue", "darkpurple", "pink"]
+    for idx, mark in enumerate(SAVED_COURSE["marks"]):
+        folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors[idx % len(colors)], icon="info-sign")).add_to(m)
+        
+    # Parse and plot the visitor's track over the static layout
+    if uploaded_file is not None:
+        fitfile = FitFile(uploaded_file.read())
+        racer_points = []
+        for record in fitfile.get_messages("record"):
+            lat = record.get_value("position_lat")
+            lon = record.get_value("position_long")
+            if lat and lon:
+                racer_points.append((lat * (180.0 / 2**31), lon * (180.0 / 2**31)))
+                
+        if len(racer_points) > 0:
+            # Draw visitor track in bright cyan
+            folium.PolyLine(locations=racer_points, color="cyan", weight=5, opacity=0.85, tooltip="Your Uploaded Track").add_to(m)
+            st.success("🎉 Your track was loaded successfully over the course map layout below!")
+        else:
+            st.error("No valid GPS data points found in your uploaded file.")
+            
+    st_folium(m, width=1100, height=650, returned_objects=[])
+```
+
+### How This New Workflow Works:
+1. **Design the Course First:** Fire up the app locally or on your temporary Streamlit cloud window. Toggle to **Designer Mode** on the sidebar. Upload your own track file as a mapping template, and draw your exact lines and course marker pins. 
+2. **Lock It Into Code:** As you draw, a code snippet dynamically generates in the sidebar under `SAVED_COURSE`. Copy that text block, go over to GitHub (or your local IDE), replace lines 13 to 23 of your code with your newly copied block, and commit changes.
+3. **Open for Everyone:** When your friends visit the deployed URL, they will arrive directly in **Racer Mode**. They cannot accidentally edit or delete your marks. The app cleanly loads your exact lines across the satellite screen, ready for them to upload their own `.fit` activity and analyze how closely they cornered your markers.
+
+<FollowUp>
+Would you like to build an extended feature in Racer Mode that **checks if their track actually crossed** your drawn Start and Finish lines, or do you want to add a text field so racers can type in their **Name or Bib Number** to label their track run?
+</FollowUp>
