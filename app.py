@@ -16,7 +16,7 @@ if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
 # --- STEP 1: LOCKED COURSE CONFIGURATION ---
-# Once you copy the configuration block from the sidebar text box, paste it directly here!
+# Paste your generated coordinates block here once you copy it from the designer!
 SAVED_COURSE = {
     "start_line": [],  
     "finish_line": [], 
@@ -28,7 +28,7 @@ def clean_coordinates(coord_input, expect_single_point=False):
     if not coord_input:
         return [] if not expect_single_point else [53.46, 9.98]
     try:
-        while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input[0], list):
+        while isinstance(coord_input, list) and len(coord_input) == 1 and isinstance(coord_input, list):
             coord_input = coord_input[0]
             
         if expect_single_point:
@@ -64,7 +64,7 @@ def generate_line_grid_points(line_endpoints, spacing_meters=5):
     if len(cleaned_line) < 2:
         return cleaned_line
     
-    p1, p2 = np.array(cleaned_line[0]), np.array(cleaned_line[1])
+    p1, p2 = np.array(cleaned_line[0]), np.array(cleaned_line[-1])
     total_distance = haversine_dist(p1.tolist(), p2.tolist())
     num_points = max(2, int(total_distance / spacing_meters))
     
@@ -92,7 +92,6 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
     start_crossings = []
     for c_name, records in all_competitors_raw.items():
         for r in records:
-            # Check proximity to EVERY point along the start grid array
             is_near_gate = any(haversine_dist(r["coords"], node) <= 2.51 for node in start_grid_nodes)
             if is_near_gate:
                 start_crossings.append(r["timestamp"])
@@ -152,7 +151,6 @@ def advanced_first_boat_sync(all_competitors_raw, course_start, course_finish, c
                     race_points.append(r["coords"])
                 elif r["timestamp"] > timer_expiry_t and not found_finish:
                     race_points.append(r["coords"])
-                    # Use the 2.5m finish grid trigger array to execute clean post-race data clips
                     is_at_finish = any(haversine_dist(r["coords"], node) <= 2.51 for node in finish_grid_nodes)
                     if is_at_finish:
                         found_finish = True
@@ -226,7 +224,6 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         config_text += f'    "marks": {markers}\n'
         config_text += "}"
         st.sidebar.text_area(label="Course Coordinates Box", value=config_text, height=200)
-
 else:
     # --- RACER MODE ---
     st.sidebar.header("🏁 Analytics Configuration")
@@ -350,3 +347,8 @@ else:
         st.markdown("### 🏆 Segmented Race Diagnostics Analytics Matrix")
         for c_name, heats in all_parsed_competitor_data.items():
             if not competitor_visibility.get(c_name, True): continue
+            with st.expander(f"📋 Telemetry Profiles: {c_name}"):
+                cols = st.columns(len(heats) if len(heats) > 0 else 1)
+                for h_idx, heat in enumerate(heats):
+                    col_target = cols[h_idx % len(cols)]
+                    col_target.metric(label=heat["name"], value=f"{len(heat['points'])} secs", delta=f"{heat['duration']} min cap")
