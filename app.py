@@ -189,7 +189,7 @@ else:
     for idx, mark in enumerate(racer_marks):
         folium.Marker(location=mark, popup=f"📍 Course Mark {idx+1}", tooltip=f"Mark {idx+1}", icon=folium.Icon(color=colors_marks[idx % len(colors_marks)], icon="info-sign")).add_to(m)
         
-    # --- RENDER COMPETING TRACKS USING CYCLING TRACE COLORS ---
+     # --- RENDER COMPETING TRACKS USING CYCLING TRACE COLORS ---
     track_colors = ["cyan", "yellow", "magenta", "lime", "red", "gold", "white", "orange"]
     
     if all_tracks_data:
@@ -197,10 +197,13 @@ else:
         
         # Display a mini index card showing what track color belongs to which file
         st.markdown("### 🏆 Competitor File Color Index")
+        
+        # 🟢 MAKE SURE THIS EXACT LINE IS HERE AND NOT DELETED:
         cols = st.columns(min(len(all_tracks_data), 4))
         
         for idx, track in enumerate(all_tracks_data):
             color = track_colors[idx % len(track_colors)]
+            
             # Draw the trace on the map
             folium.PolyLine(
                 locations=track["points"], 
@@ -209,7 +212,7 @@ else:
                 opacity=0.85, 
                 tooltip=track["name"]
             ).add_to(m)
-# Print file label color card indicators below map screen view layouts
-col_target = cols[idx % 4]
-col_target.markdown(f"🎨 Track {idx+1}: {track['name']} is drawn in {color.upper()}")
-st_folium(m, width=1100, height=650, key="racer_map_widget", returned_objects=[])
+            
+            # Print file label color card indicators below map screen view layouts
+            col_target = cols[idx % 4]
+            col_target.markdown(f"🎨 **Track {idx+1}:** `{track['name']}` is drawn in **{color.upper()}**")
