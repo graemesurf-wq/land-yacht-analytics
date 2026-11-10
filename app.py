@@ -16,7 +16,6 @@ if "saved_raw_drawings" not in st.session_state:
     st.session_state["saved_raw_drawings"] = None
 
 # --- STEP 1: LOCKED COURSE CONFIGURATION ---
-# Once you copy the configuration block from the sidebar text box, paste it directly here!
 SAVED_COURSE = {
     "start_line": [],  
     "finish_line": [], 
@@ -28,9 +27,9 @@ def haversine_dist(p1, p2):
     if not p1 or not p2:
         return 999999
     R = 6371000
-    phi1, phi2 = np.radians(p1[0]), np.radians(p2[0])
-    dphi = np.radians(p2[0] - p1[0])
-    dlon = np.radians(p2[1] - p1[1])
+    phi1, phi2 = np.radians(p1), np.radians(p2)
+    dphi = np.radians(p2 - p1)
+    dlon = np.radians(p2 - p1)
     a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2) * np.sin(dlon/2)**2
     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
 
@@ -40,10 +39,10 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
     staging movements that do not hit the Mark 1 validation gate.
     """
     if len(records) < 20 or not course_start or not mark1:
-        return [{"name": "Full Session Log", "points": [r["coords"] for r in records]}]
+        return [{"name": "Full Session Log", "points": [r["coords"] for r in records], "duration": 0.0}]
 
     chunks = []
-    current_chunk = [records[0]]
+    current_chunk = [records]
     
     for idx in range(1, len(records)):
         t_prev = records[idx-1]["timestamp"]
@@ -58,8 +57,7 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
     chunks.append(current_chunk)
 
     races = []
-    mark1_pt = mark1[0] if isinstance(mark1, list) and len(mark1) > 0 and isinstance(mark1[0], list) else mark1
-    gate_finish_pt = course_finish[0] if course_finish and isinstance(course_finish, list) and isinstance(course_finish[0], list) else course_finish
+    mark1_pt = mark1 if isinstance(mark1, list) and len(mark1) > 0 and not isinstance(mark1, list) else mark1
 
     for chunk in chunks:
         if len(races) >= max_races:
@@ -89,7 +87,7 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
         finish_crossed_idx = timer_expiry_idx
         found_finish = False
         for f_idx in range(timer_expiry_idx, len(chunk_coords)):
-            if gate_finish_pt and haversine_dist(chunk_coords[f_idx], gate_finish_pt) < 30:
+            if course_finish and haversine_dist(chunk_coords[f_idx], course_finish) < 30:
                 finish_crossed_idx = f_idx
                 found_finish = True
                 break
@@ -104,7 +102,7 @@ def parse_multi_races_by_gaps(records, course_start, course_finish, mark1, durat
         })
         
     if not races:
-        return [{"name": "Full Data Track (No Heats Validated)", "points": [r["coords"] for r in records]}]
+        return [{"name": "Full Data Track (No Heats Validated)", "points": [r["coords"] for r in records], "duration": 0.0}]
     return races
 
 # --- SIDEBAR CONTROLS & DESIGNER VIEW ---
@@ -145,18 +143,18 @@ if app_mode == "Designer Mode (Create/Edit Course Layout)":
         if user_drawings:
             for item in user_drawings:
                 g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-                if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-                elif g_type == "Point": markers.append([coords[1], coords[0]])
+                if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+                elif g_type == "Point": markers.append([coords, coords])
         
-        if lines: folium.PolyLine(locations=lines if not isinstance(lines[0][0], list) else lines[0], color="green", weight=6).add_to(m)
-        if len(lines) >= 2: folium.PolyLine(locations=lines[1], color="red", weight=6).add_to(m)
+        if lines: folium.PolyLine(locations=lines, color="green", weight=6).add_to(m)
+        if len(lines) >= 2: folium.PolyLine(locations=lines, color="red", weight=6).add_to(m)
         for mk in markers: folium.Marker(location=mk, icon=folium.Icon(color="orange")).add_to(m)
             
         st_folium(m, width=1100, height=600, key="designer_view_map", returned_objects=[])
         
         config_text = "SAVED_COURSE = {\n"
-        config_text += f'    "start_line": {lines[0] if len(lines) >= 1 else []},\n'
-        config_text += f'    "finish_line": {lines[1] if len(lines) >= 2 else []},\n'
+        config_text += f'    "start_line": {lines if len(lines) >= 1 else []},\n'
+        config_text += f'    "finish_line": {lines if len(lines) >= 2 else []},\n'
         config_text += f'    "marks": {markers}\n'
         config_text += "}"
         st.sidebar.text_area(label="Course Coordinates Box", value=config_text, height=200)
@@ -185,13 +183,13 @@ else:
         lines, markers = [], []
         for item in st.session_state["saved_raw_drawings"]:
             g_type, coords = item['geometry']['type'], item['geometry']['coordinates']
-            if g_type == "LineString": lines.append([[pt[1], pt[0]] for pt in coords])
-            elif g_type == "Point": markers.append([coords[1], coords[0]])
-        course_start = lines[0] if len(lines) >= 1 else []
-        course_finish = lines[1] if len(lines) >= 2 else []
+            if g_type == "LineString": lines.append([[pt, pt] for pt in coords])
+            elif g_type == "Point": markers.append([coords, coords])
+        course_start = lines if len(lines) >= 1 else []
+        course_finish = lines if len(lines) >= 2 else []
         course_marks = markers
 
-    mark1_anchor = course_marks[0] if course_marks else None
+    mark1_anchor = course_marks if course_marks else None
     all_parsed_competitor_data = {}
     all_lats, all_lons = [], []
     
@@ -225,7 +223,7 @@ else:
     if all_lats:
         map_center = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
     elif course_start and isinstance(course_start, list) and len(course_start) > 0:
-        map_center = course_start[0] if isinstance(course_start[0], list) else course_start
+        map_center = course_start
     else:
         map_center = [53.46, 9.98]
         
@@ -235,10 +233,10 @@ else:
     
     if course_start:
         folium.PolyLine(locations=course_start, color="green", weight=6).add_to(m)
-        folium.Marker(location=course_start[0] if isinstance(course_start[0], list) else course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
+        folium.Marker(location=course_start, popup="🟢 START", icon=folium.Icon(color="green", icon="play")).add_to(m)
     if course_finish:
         folium.PolyLine(locations=course_finish, color="red", weight=6).add_to(m)
-        folium.Marker(location=course_finish[0] if isinstance(course_finish[0], list) else course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
+        folium.Marker(location=course_finish, popup="🏁 FINISH", icon=folium.Icon(color="red", icon="flag-checkered")).add_to(m)
     for idx, mark in enumerate(course_marks):
         folium.Marker(location=mark, popup=f"📍 Mark {idx+1}", icon=folium.Icon(color="orange", icon="star")).add_to(m)
 
